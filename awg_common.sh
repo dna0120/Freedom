@@ -777,7 +777,7 @@ safe_load_config() {
                 DISABLE_IPV6|ALLOWED_IPS_MODE|ALLOWED_IPS|AWG_ENDPOINT|AWG_MTU|\
                 AWG_Jc|AWG_Jmin|AWG_Jmax|AWG_S1|AWG_S2|AWG_S3|AWG_S4|\
                 AWG_H1|AWG_H2|AWG_H3|AWG_H4|AWG_I1|AWG_I2|AWG_I3|AWG_I4|AWG_I5|AWG_PRESET|NO_TWEAKS|NO_CPS|\
-                AWG_APPLY_MODE|ALLOW_IPV6_TUNNEL|IPV6_SUBNET|SERVER_HAS_NATIVE_IPV6|PREV_AWG_PORT|CLIENT_ISOLATION|CLIENT_ISOLATION_NET|AWG_SERVER_NAME)
+                AWG_APPLY_MODE|ALLOW_IPV6_TUNNEL|IPV6_SUBNET|SERVER_HAS_NATIVE_IPV6|PREV_AWG_PORT|CLIENT_ISOLATION|CLIENT_ISOLATION_NET|AWG_SERVER_NAME|ENABLE_BBR|CLIENT_DNS_1|CLIENT_DNS_2)
                     export "$key=$value"
                     ;;
             esac
@@ -1161,7 +1161,7 @@ render_server_config() {
     # route. Bidirectional (-o %i and -i %i) caps the MSS both ways. IPv4: MTU-40,
     # IPv6: MTU-60. SYN only, mangle table (separate from UFW/filter). The -A/-D
     # style mirrors the MASQUERADE rules above.
-    local awg_mtu="${AWG_MTU:-1280}"
+    local awg_mtu="${AWG_MTU:-1420}"
     local mss4=$(( awg_mtu - 40 ))
     local mss6=$(( awg_mtu - 60 ))
     postup="${postup}; iptables -t mangle -A FORWARD -o %i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss ${mss4}; iptables -t mangle -A FORWARD -i %i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss ${mss4}"
@@ -1215,7 +1215,7 @@ render_server_config() {
 [Interface]
 PrivateKey = ${server_privkey}
 Address = ${address_line}
-MTU = ${AWG_MTU:-1280}
+MTU = ${AWG_MTU:-1420}
 ListenPort = ${AWG_PORT}
 PostUp = ${postup}
 PostDown = ${postdown}
@@ -1271,7 +1271,7 @@ EOF
 
 # Acceptable MTU range for AWG / WireGuard.
 # Lower bound 576 (classic IPv4 minimum), upper bound 9100 (just under jumbo).
-# Values outside the range are treated as invalid and dropped (fallback to 1280).
+# Values outside the range are treated as invalid and dropped (fallback to 1420).
 _validate_mtu() {
     local v="$1"
     [[ "$v" =~ ^[0-9]+$ ]] || return 1
@@ -1359,18 +1359,25 @@ render_client_config() {
     fi
 
     # MTU resolution order: server awg0.conf > AWG_MTU from awgsetup_cfg.init >
-    # 1280 fallback. Server config is the source of truth for a running server -
-    # the user could have hand-edited MTU in /etc/amnezia/amneziawg/awg0.conf
-    # and regen has to pick that up (MyAI-sdge, Discussion #38). Out-of-range
-    # values (outside 576..9100) at any stage roll back to 1280.
+    # 1420 practical fallback (1280 only if value is invalid). Server config is
+    # the source of truth for a running server - the user could have hand-edited
+    # MTU in /etc/amnezia/amneziawg/awg0.conf and regen has to pick that up.
+    # Out-of-range values (outside 576..9100) at any stage roll back to 1420.
     local mtu
     mtu=$(_extract_mtu_from_server_conf) || mtu=""
     if [[ -z "$mtu" ]]; then
         if _validate_mtu "${AWG_MTU:-}"; then
             mtu="$AWG_MTU"
         else
-            mtu=1280
+            mtu=1420
         fi
+    fi
+
+    local client_dns
+    if [[ -n "${CLIENT_DNS_1:-}" ]]; then
+        client_dns="${CLIENT_DNS_1}, ${CLIENT_DNS_2:-$CLIENT_DNS_1}"
+    else
+        client_dns="1.1.1.1, 1.0.0.1"
     fi
 
     # temp in the client config dir ($AWG_DIR) -> mv = atomic rename.
@@ -1388,7 +1395,7 @@ render_client_config() {
 [Interface]
 PrivateKey = ${client_privkey}
 Address = ${address_line}
-DNS = 1.1.1.1, 1.0.0.1
+DNS = ${client_dns}
 MTU = ${mtu}
 Jc = ${AWG_Jc}
 Jmin = ${AWG_Jmin}
@@ -1888,7 +1895,7 @@ generate_vpn_uri() {
     # so hardcoding them would desync from .conf - same class as issue #67 (the
     # structured psk_key field was authoritative).
     local mtu keepalive dns_line dns1 dns2
-    mtu=$(grep -oP '^MTU\s*=\s*\K[0-9]+' "$conf_file" | head -n1); mtu="${mtu:-1280}"
+    mtu=$(grep -oP '^MTU\s*=\s*\K[0-9]+' "$conf_file" | head -n1); mtu="${mtu:-1420}"
     keepalive=$(grep -oP '^PersistentKeepalive\s*=\s*\K[0-9]+' "$conf_file" | head -n1); keepalive="${keepalive:-33}"
     dns_line=$(grep -oP '^DNS\s*=\s*\K.+' "$conf_file" | head -n1 | tr -d ' \r')
     dns1="${dns_line%%,*}"; dns1="${dns1:-1.1.1.1}"

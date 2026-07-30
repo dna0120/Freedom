@@ -22,3 +22,15 @@ Menu sẽ hiện các lựa chọn:
 - Revoke existing client
 - Show server status
 - Uninstall AmneziaWG
+
+## Tuỳ chọn cài đặt hữu ích
+
+Trong quá trình cài (interactive), script sẽ hỏi:
+- **DNS** cho client (mặc định `1.1.1.1`, `1.0.0.1`)
+- **MTU** — tự probe path MTU rồi gợi ý (thường ~1420; không còn cứng 1280)
+
+Hoặc truyền sẵn:
+
+```bash
+sudo ./install_amneziawg.sh --dns=8.8.8.8,8.8.4.4 --mtu=1420
+```

@@ -39,8 +39,8 @@ MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 # SHA256 checksums of downloaded scripts. Updated at each release.
 # Verified in step5_download_scripts() after curl.
 # Format: sha256sum output (hex, 64 chars).
-COMMON_SCRIPT_SHA256="340953b78b6e955c2d96af498023855fe6662c6686b83d8ed18a542d5621106d"
-MANAGE_SCRIPT_SHA256="d3750125991e0ad763d7729e334bed00f9ade768e1771cae9717cc23e61a0f9e"
+COMMON_SCRIPT_SHA256="570d10630acf20b4e096aa3fffca6a1f1ea049186c2dcb1462b7def0871aa1d5"
+MANAGE_SCRIPT_SHA256="1cf43852f7a51234fa551f420a0de4e293b2f2bb1f0afd63ea41b8fde30fdf4d"
 
 # CLI flags
 UNINSTALL=0; HELP=0; HELP_EXIT_RC=0; DIAGNOSTIC=0; VERBOSE=0; NO_COLOR=0; AUTO_YES=0; NO_TWEAKS=0; NO_CPS=0
@@ -54,6 +54,8 @@ CLI_ALLOW_IPV6_TUNNEL=0
 CLI_ISOLATION="default"
 CLI_SERVER_NAME=""
 CLI_MOBILE=0
+CLI_DNS=""
+CLI_MTU=""
 
 # --- Auto-cleanup of temporary files ---
 _install_temp_files=()
@@ -109,6 +111,8 @@ while [[ $# -gt 0 ]]; do
         --jc=*)          CLI_JC="${1#*=}" ;;
         --jmin=*)        CLI_JMIN="${1#*=}" ;;
         --jmax=*)        CLI_JMAX="${1#*=}" ;;
+        --dns=*)         CLI_DNS="${1#*=}" ;;
+        --mtu=*)         CLI_MTU="${1#*=}" ;;
         *) echo "Unknown argument: $1" >&2; HELP=1; HELP_EXIT_RC=1 ;;
     esac
     shift
@@ -197,6 +201,142 @@ configure_bbr() {
     fi
 }
 
+validate_ipv4_addr() {
+    local ip="$1"
+    [[ "$ip" =~ ^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$ ]]
+}
+
+# Probe IPv4 path MTU toward a public host via DF ping binary search.
+# Prints integer path MTU on success, otherwise nothing.
+probe_path_mtu() {
+    local target="${1:-1.1.1.1}"
+    local lo=576 hi=1500 mid payload ok=0
+    local iface_mtu
+    iface_mtu=$(ip -o -4 route get "$target" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+    if [[ -n "$iface_mtu" ]]; then
+        local link_mtu
+        link_mtu=$(cat "/sys/class/net/${iface_mtu}/mtu" 2>/dev/null || true)
+        if [[ "$link_mtu" =~ ^[0-9]+$ ]] && (( link_mtu >= 576 && link_mtu <= 9000 )); then
+            hi="$link_mtu"
+        fi
+    fi
+    command -v ping >/dev/null 2>&1 || return 1
+    # payload size = MTU - 28 (IPv4 20 + ICMP 8)
+    while (( lo <= hi )); do
+        mid=$(( (lo + hi) / 2 ))
+        payload=$(( mid - 28 ))
+        (( payload < 0 )) && payload=0
+        if ping -c 1 -W 1 -M do -s "$payload" "$target" >/dev/null 2>&1; then
+            ok="$mid"
+            lo=$(( mid + 1 ))
+        else
+            hi=$(( mid - 1 ))
+        fi
+    done
+    [[ "$ok" -ge 576 ]] || return 1
+    echo "$ok"
+}
+
+configure_client_dns() {
+    local dns1_default="${CLIENT_DNS_1:-1.1.1.1}"
+    local dns2_default="${CLIENT_DNS_2:-1.0.0.1}"
+    if [[ -n "${CLI_DNS:-}" ]]; then
+        local _d1 _d2
+        _d1="${CLI_DNS%%,*}"
+        _d2="${CLI_DNS#*,}"
+        [[ "$_d2" == "$CLI_DNS" ]] && _d2=""
+        _d1="${_d1#"${_d1%%[![:space:]]*}"}"; _d1="${_d1%"${_d1##*[![:space:]]}"}"
+        _d2="${_d2#"${_d2%%[![:space:]]*}"}"; _d2="${_d2%"${_d2##*[![:space:]]}"}"
+        validate_ipv4_addr "$_d1" || die "Invalid --dns first address: '$_d1'"
+        CLIENT_DNS_1="$_d1"
+        if [[ -n "$_d2" ]]; then
+            validate_ipv4_addr "$_d2" || die "Invalid --dns second address: '$_d2'"
+            CLIENT_DNS_2="$_d2"
+        else
+            CLIENT_DNS_2="$_d1"
+        fi
+        log "Client DNS from CLI: ${CLIENT_DNS_1}, ${CLIENT_DNS_2}"
+        return 0
+    fi
+    if [[ "$AUTO_YES" -eq 1 ]]; then
+        CLIENT_DNS_1="$dns1_default"
+        CLIENT_DNS_2="$dns2_default"
+        log "Client DNS (--yes): ${CLIENT_DNS_1}, ${CLIENT_DNS_2}"
+        return 0
+    fi
+    local input_dns=""
+    CLIENT_DNS_1=""
+    until validate_ipv4_addr "${CLIENT_DNS_1:-}"; do
+        read -rp "$(ui_text dns1_prompt) [${dns1_default}]: " input_dns < /dev/tty
+        CLIENT_DNS_1="${input_dns:-$dns1_default}"
+        if ! validate_ipv4_addr "$CLIENT_DNS_1"; then
+            log_warn "$(ui_text dns_invalid): '$CLIENT_DNS_1'"
+            CLIENT_DNS_1=""
+        fi
+    done
+    CLIENT_DNS_2=""
+    until validate_ipv4_addr "${CLIENT_DNS_2:-}"; do
+        read -rp "$(ui_text dns2_prompt) [${dns2_default}]: " input_dns < /dev/tty
+        if [[ -z "$input_dns" ]]; then
+            CLIENT_DNS_2="${dns2_default}"
+            [[ -z "$CLIENT_DNS_2" ]] && CLIENT_DNS_2="$CLIENT_DNS_1"
+            break
+        fi
+        CLIENT_DNS_2="$input_dns"
+        if ! validate_ipv4_addr "$CLIENT_DNS_2"; then
+            log_warn "$(ui_text dns_invalid): '$CLIENT_DNS_2'"
+            CLIENT_DNS_2=""
+        fi
+    done
+    log "Client DNS: ${CLIENT_DNS_1}, ${CLIENT_DNS_2}"
+}
+
+configure_mtu() {
+    local suggested=1420 input_mtu path_mtu
+    if [[ -n "${CLI_MTU:-}" ]]; then
+        if ! [[ "$CLI_MTU" =~ ^[0-9]+$ ]] || (( CLI_MTU < 576 || CLI_MTU > 9100 )); then
+            die "Invalid --mtu=$CLI_MTU (allowed: 576-9100)"
+        fi
+        AWG_MTU="$CLI_MTU"
+        log "Tunnel MTU from CLI: ${AWG_MTU}"
+        return 0
+    fi
+    if [[ -n "${AWG_MTU:-}" ]] && [[ "$AWG_MTU" =~ ^[0-9]+$ ]] && (( AWG_MTU >= 576 && AWG_MTU <= 9100 )); then
+        if [[ "${config_exists:-0}" -eq 1 ]]; then
+            log "Tunnel MTU from saved config: ${AWG_MTU}"
+            return 0
+        fi
+    fi
+    # Probe once in current shell (not via $()) so logging stays clean.
+    path_mtu="$(probe_path_mtu 1.1.1.1 2>/dev/null || true)"
+    if [[ "$path_mtu" =~ ^[0-9]+$ ]]; then
+        suggested=$(( path_mtu - 80 ))
+        (( suggested < 1280 )) && suggested=1280
+        (( suggested > 1420 )) && suggested=1420
+        log "Path MTU probe to 1.1.1.1: ${path_mtu} → suggested tunnel MTU ${suggested}"
+    else
+        suggested=1420
+        log_warn "Path MTU probe failed; using practical default tunnel MTU ${suggested}"
+    fi
+    if [[ "$AUTO_YES" -eq 1 ]]; then
+        AWG_MTU="$suggested"
+        log "Tunnel MTU (--yes): ${AWG_MTU}"
+        return 0
+    fi
+    echo ""
+    log "$(ui_text mtu_note)"
+    while true; do
+        read -rp "$(ui_text mtu_prompt) [${suggested}]: " input_mtu < /dev/tty
+        AWG_MTU="${input_mtu:-$suggested}"
+        if [[ "$AWG_MTU" =~ ^[0-9]+$ ]] && (( AWG_MTU >= 576 && AWG_MTU <= 9100 )); then
+            break
+        fi
+        log_warn "$(ui_text mtu_invalid): '$AWG_MTU' (576-9100)"
+        AWG_MTU=""
+    done
+    log "Tunnel MTU: ${AWG_MTU}"
+}
+
 ui_text() {
     local key="$1"
     case "${UI_LANG:-en}" in
@@ -237,6 +377,12 @@ ui_text() {
                 revoking) echo "Đang thu hồi client '%s'..." ;;
                 revoked_ok) echo "Đã thu hồi client '%s'." ;;
                 revoked_fail) echo "Thu hồi client '%s' thất bại. Xem log phía trên." ;;
+                dns1_prompt) echo "DNS resolver thứ nhất cho client" ;;
+                dns2_prompt) echo "DNS resolver thứ hai cho client (tuỳ chọn)" ;;
+                dns_invalid) echo "DNS IPv4 không hợp lệ" ;;
+                mtu_prompt) echo "MTU tunnel cho client" ;;
+                mtu_note) echo "Ghi chú MTU: 1280 là mức tối thiểu IPv6 (an toàn nhưng thường chậm). VPS Ethernet thường tốt hơn quanh 1420." ;;
+                mtu_invalid) echo "MTU không hợp lệ" ;;
                 *) echo "" ;;
             esac
             ;;
@@ -277,6 +423,12 @@ ui_text() {
                 revoking) echo "Revoking client '%s'..." ;;
                 revoked_ok) echo "Client '%s' revoked." ;;
                 revoked_fail) echo "Failed to revoke client '%s'. Check logs above." ;;
+                dns1_prompt) echo "First DNS resolver for clients" ;;
+                dns2_prompt) echo "Second DNS resolver for clients (optional)" ;;
+                dns_invalid) echo "Invalid IPv4 DNS" ;;
+                mtu_prompt) echo "Tunnel MTU for clients" ;;
+                mtu_note) echo "MTU note: 1280 is IPv6-minimum (very safe, often slow). Typical Ethernet VPS works better around 1420." ;;
+                mtu_invalid) echo "Invalid MTU" ;;
                 *) echo "" ;;
             esac
             ;;
@@ -473,6 +625,8 @@ Tùy chọn:
   --jc=N                Đặt Jc thủ công
   --jmin=N              Đặt Jmin thủ công
   --jmax=N              Đặt Jmax thủ công (>= Jmin)
+  --dns=IP[,IP2]        DNS cho client (mặc định 1.1.1.1,1.0.0.1)
+  --mtu=NUMBER          MTU tunnel (576-9100; mặc định probe tự động)
   --no-cps              Tắt CPS (I1)
 
 Ví dụ:
@@ -530,6 +684,8 @@ Options:
   --jc=N               Set Jc manually (1-128, overrides preset)
   --jmin=N             Set Jmin manually (0-1280, overrides preset)
   --jmax=N             Set Jmax manually (0-1280, overrides preset, must be >= Jmin)
+  --dns=IP[,IP2]       Client DNS resolvers (default 1.1.1.1,1.0.0.1)
+  --mtu=NUMBER         Tunnel MTU 576-9100 (default: auto-probe suggestion)
   --no-cps              Disable CPS (the I1 parameter) - needed if the desktop
                         AmneziaVPN on macOS hangs on connect (issue #159)
 
@@ -592,6 +748,9 @@ AWG_SERVER_NAME=${AWG_SERVER_NAME}
 CLIENT_ISOLATION=${CLIENT_ISOLATION:-1}
 NO_TWEAKS=${NO_TWEAKS}
 ENABLE_BBR=${ENABLE_BBR:-1}
+CLIENT_DNS_1=${CLIENT_DNS_1:-1.1.1.1}
+CLIENT_DNS_2=${CLIENT_DNS_2:-1.0.0.1}
+AWG_MTU=${AWG_MTU:-1420}
 EOF
     chmod 600 "$PARAMS_FILE" 2>/dev/null || true
 }
@@ -614,6 +773,9 @@ load_compat_params() {
             CLIENT_ISOLATION) [[ "$value" =~ ^(0|1)$ ]] && CLIENT_ISOLATION="$value" ;;
             NO_TWEAKS) [[ "$value" =~ ^(0|1)$ ]] && NO_TWEAKS="$value" ;;
             ENABLE_BBR) [[ "$value" =~ ^(0|1)$ ]] && ENABLE_BBR="$value" ;;
+            CLIENT_DNS_1) [[ -n "$value" ]] && CLIENT_DNS_1="$value" ;;
+            CLIENT_DNS_2) [[ -n "$value" ]] && CLIENT_DNS_2="$value" ;;
+            AWG_MTU|SERVER_MTU) [[ "$value" =~ ^[0-9]+$ ]] && AWG_MTU="$value" ;;
         esac
     done < "$PARAMS_FILE"
     log "Compatibility params loaded from $PARAMS_FILE"
@@ -966,7 +1128,7 @@ safe_load_config() {
                 DISABLE_IPV6|ALLOWED_IPS_MODE|ALLOWED_IPS|AWG_ENDPOINT|AWG_MTU|\
                 AWG_Jc|AWG_Jmin|AWG_Jmax|AWG_S1|AWG_S2|AWG_S3|AWG_S4|\
                 AWG_H1|AWG_H2|AWG_H3|AWG_H4|AWG_I1|AWG_I2|AWG_I3|AWG_I4|AWG_I5|AWG_PRESET|NO_TWEAKS|NO_CPS|\
-                AWG_APPLY_MODE|ALLOW_IPV6_TUNNEL|IPV6_SUBNET|SERVER_HAS_NATIVE_IPV6|PREV_AWG_PORT|CLIENT_ISOLATION|CLIENT_ISOLATION_NET|AWG_SERVER_NAME)
+                AWG_APPLY_MODE|ALLOW_IPV6_TUNNEL|IPV6_SUBNET|SERVER_HAS_NATIVE_IPV6|PREV_AWG_PORT|CLIENT_ISOLATION|CLIENT_ISOLATION_NET|AWG_SERVER_NAME|ENABLE_BBR|CLIENT_DNS_1|CLIENT_DNS_2)
                     export "$key=$value"
                     ;;
             esac
@@ -2550,6 +2712,9 @@ initialize_setup() {
     ALLOWED_IPS=""
     AWG_ENDPOINT=""
     ENABLE_BBR=1
+    CLIENT_DNS_1="${CLIENT_DNS_1:-1.1.1.1}"
+    CLIENT_DNS_2="${CLIENT_DNS_2:-1.0.0.1}"
+    AWG_MTU="${AWG_MTU:-}"
     CLIENT_ISOLATION=""
     # Hard reset (not ${VAR:-}): the internal ownership marker must not be
     # inherited from the environment - an externally exported variable would
@@ -2576,6 +2741,9 @@ initialize_setup() {
             0|1) : ;;
             *) ENABLE_BBR=1 ;;
         esac
+        CLIENT_DNS_1=${CLIENT_DNS_1:-1.1.1.1}
+        CLIENT_DNS_2=${CLIENT_DNS_2:-1.0.0.1}
+        AWG_MTU=${AWG_MTU:-}
         # CLIENT_ISOLATION from the config: strictly 0|1 (the whitelist parser
         # does not check values, and configs get edited by hand). Otherwise the
         # arithmetic context [[ "on" -eq 1 ]] dereferences the string as an
@@ -2704,6 +2872,8 @@ initialize_setup() {
         if [[ "$DISABLE_IPV6" == "default" ]]; then configure_ipv6; fi
         if [[ "$ALLOWED_IPS_MODE" == "default" ]]; then configure_routing_mode; fi
         configure_bbr
+        configure_client_dns
+        configure_mtu
     else
         log "Using settings from $CONFIG_FILE."
         if [[ "$ALLOWED_IPS_MODE" == "3" ]] && [[ -n "$ALLOWED_IPS" ]]; then
@@ -2711,6 +2881,9 @@ initialize_setup() {
                 die "Invalid ALLOWED_IPS in config: '$ALLOWED_IPS'. Delete $CONFIG_FILE and re-run the installer."
             fi
         fi
+        # Allow CLI overrides for DNS/MTU even on resume/reconfigure.
+        if [[ -n "${CLI_DNS:-}" || -z "${CLIENT_DNS_1:-}" ]]; then configure_client_dns; fi
+        if [[ -n "${CLI_MTU:-}" || -z "${AWG_MTU:-}" ]]; then configure_mtu; fi
     fi
 
     # Changing the subnet with live peers is forbidden - check before the
@@ -2807,7 +2980,9 @@ export CLIENT_ISOLATION=${CLIENT_ISOLATION:-1}
 export CLIENT_ISOLATION_NET='${CLIENT_ISOLATION_NET:-}'
 export AWG_ENDPOINT='${AWG_ENDPOINT}'
 export AWG_SERVER_NAME='${AWG_SERVER_NAME:-AWG Server}'
-export AWG_MTU=${AWG_MTU:-1280}
+export AWG_MTU=${AWG_MTU:-1420}
+export CLIENT_DNS_1='${CLIENT_DNS_1:-1.1.1.1}'
+export CLIENT_DNS_2='${CLIENT_DNS_2:-1.0.0.1}'
 # AWG 2.0 Parameters
 export AWG_Jc=${AWG_Jc}
 export AWG_Jmin=${AWG_Jmin}
@@ -2859,6 +3034,8 @@ EOF
     log "IPv6 disable: $DISABLE_IPV6"
     log "AllowedIPs mode: $ALLOWED_IPS_MODE"
     log "Client isolation: $( [[ "${CLIENT_ISOLATION:-1}" -eq 1 ]] && echo enabled || echo disabled )"
+    log "Client DNS: ${CLIENT_DNS_1:-1.1.1.1}, ${CLIENT_DNS_2:-1.0.0.1}"
+    log "Tunnel MTU: ${AWG_MTU:-1420}"
 
     log "Server name: ${AWG_SERVER_NAME}"
     # Changing the routing mode is a client-config operation: new clients get
