@@ -7,12 +7,12 @@ fi
 
 # ==============================================================================
 # AmneziaWG 2.0 installation and configuration script for Ubuntu/Debian servers
-# Author: @bivlked
+# Author: @dna0120
 # Version: 5.21.2
 # Date: 2026-07-22
-# Repository: https://github.com/bivlked/amneziawg-installer
+# Repository: https://github.com/dna0120/Freedom
 # Quick install:
-#   curl -O https://raw.githubusercontent.com/bivlked/amneziawg-installer/master/install_amneziawg_en.sh
+#   curl -O https://raw.githubusercontent.com/dna0120/Freedom/main/install_amneziawg_en.sh
 #   chmod +x install_amneziawg_en.sh
 #   sudo ./install_amneziawg_en.sh
 # ==============================================================================
@@ -27,15 +27,17 @@ STATE_FILE="$AWG_DIR/setup_state"
 LOG_FILE="$AWG_DIR/install_amneziawg.log"
 KEYS_DIR="$AWG_DIR/keys"
 SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"
-AWG_BRANCH="${AWG_BRANCH:-v${SCRIPT_VERSION}}"
-COMMON_SCRIPT_URL="https://raw.githubusercontent.com/bivlked/amneziawg-installer/${AWG_BRANCH}/awg_common_en.sh"
+PARAMS_FILE="/etc/amnezia/amneziawg/params"
+PROJECT_REPO="${PROJECT_REPO:-dna0120/Freedom}"
+PROJECT_REPO_URL="https://github.com/${PROJECT_REPO}"
+PROJECT_RAW_BASE="https://raw.githubusercontent.com/${PROJECT_REPO}/main"
+COMMON_SCRIPT_URL="${COMMON_SCRIPT_URL:-${PROJECT_RAW_BASE}/awg_common_en.sh}"
 COMMON_SCRIPT_PATH="$AWG_DIR/awg_common.sh"
-MANAGE_SCRIPT_URL="https://raw.githubusercontent.com/bivlked/amneziawg-installer/${AWG_BRANCH}/manage_amneziawg_en.sh"
+MANAGE_SCRIPT_URL="${MANAGE_SCRIPT_URL:-${PROJECT_RAW_BASE}/manage_amneziawg_en.sh}"
 MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
 
 # SHA256 checksums of downloaded scripts. Updated at each release.
 # Verified in step5_download_scripts() after curl.
-# Verification is skipped when AWG_BRANCH is overridden (test branch).
 # Format: sha256sum output (hex, 64 chars).
 COMMON_SCRIPT_SHA256="340953b78b6e955c2d96af498023855fe6662c6686b83d8ed18a542d5621106d"
 MANAGE_SCRIPT_SHA256="d3750125991e0ad763d7729e334bed00f9ade768e1771cae9717cc23e61a0f9e"
@@ -44,6 +46,8 @@ MANAGE_SCRIPT_SHA256="d3750125991e0ad763d7729e334bed00f9ade768e1771cae9717cc23e6
 UNINSTALL=0; HELP=0; HELP_EXIT_RC=0; DIAGNOSTIC=0; VERBOSE=0; NO_COLOR=0; AUTO_YES=0; NO_TWEAKS=0; NO_CPS=0
 FORCE_REINSTALL=0
 _APT_UPDATED=0
+CLI_LANG=""
+UI_LANG="${UI_LANG:-}"
 CLI_PORT=""; CLI_SUBNET=""; CLI_DISABLE_IPV6="default"; CLI_SSH_PORT=""
 CLI_ROUTING_MODE="default"; CLI_CUSTOM_ROUTES=""; CLI_ENDPOINT=""; CLI_NO_TWEAKS=0; CLI_NO_CPS=0
 CLI_ALLOW_IPV6_TUNNEL=0
@@ -97,6 +101,7 @@ while [[ $# -gt 0 ]]; do
         --server-name=*) CLI_SERVER_NAME="${1#*=}" ;;
         --mobile)        CLI_MOBILE=1 ;;
         --yes|-y)        AUTO_YES=1 ;;
+        --lang=*)        CLI_LANG="${1#*=}" ;;
         --no-tweaks)     NO_TWEAKS=1; CLI_NO_TWEAKS=1 ;;
         --no-cps)        NO_CPS=1; CLI_NO_CPS=1 ;;
         --force|-f)      FORCE_REINSTALL=1 ;;
@@ -151,6 +156,123 @@ log_warn()  { log_msg "WARN" "$1"; }
 log_error() { log_msg "ERROR" "$1"; }
 log_debug() { if [[ "$VERBOSE" -eq 1 ]]; then log_msg "DEBUG" "$1"; fi; }
 die()       { log_error "CRITICAL ERROR: $1"; log_error "Installation aborted. Log: $LOG_FILE"; exit 1; }
+
+ui_text() {
+    local key="$1"
+    case "${UI_LANG:-en}" in
+        vi)
+            case "$key" in
+                language_prompt) echo "Chọn ngôn ngữ / Select language:" ;;
+                language_opt_en) echo "1) English" ;;
+                language_opt_vi) echo "2) Tiếng Việt" ;;
+                language_select) echo "Nhập lựa chọn [1-2, mặc định 1]: " ;;
+                menu_welcome) echo "Chào mừng đến với AmneziaWG-install!" ;;
+                menu_repo) echo "Mã nguồn: ${PROJECT_REPO_URL}" ;;
+                menu_installed) echo "Phát hiện AmneziaWG đã được cài." ;;
+                menu_status_running) echo "Trạng thái service: running" ;;
+                menu_status_stopped) echo "Trạng thái service: CHƯA chạy (dùng mục 4 để chẩn đoán)" ;;
+                menu_what) echo "Bạn muốn làm gì?" ;;
+                menu_add) echo "1) Thêm client mới" ;;
+                menu_list) echo "2) Xem danh sách client" ;;
+                menu_revoke) echo "3) Thu hồi client" ;;
+                menu_status) echo "4) Xem trạng thái server" ;;
+                menu_uninstall) echo "5) Gỡ AmneziaWG" ;;
+                menu_reconfigure) echo "6) Cấu hình lại server" ;;
+                menu_exit) echo "7) Thoát" ;;
+                menu_tip) echo "Mẹo: cài lại full bằng: sudo bash $0 --force" ;;
+                menu_select) echo "Chọn tùy chọn [1-7]: " ;;
+                first_client_prompt) echo "Bây giờ bạn có thể tạo cấu hình client đầu tiên." ;;
+                add_more_hint) echo "Muốn thêm client nữa thì chỉ cần chạy lại script này!" ;;
+                client_cfg_title) echo "Cấu hình client" ;;
+                client_name_rule1) echo "Tên client chỉ gồm chữ/số." ;;
+                client_name_rule2) echo "Có thể dùng _ hoặc -, tối đa 15 ký tự." ;;
+                client_name_prompt) echo "Tên client: " ;;
+                client_name_empty) echo "Tên client không được để trống." ;;
+                client_name_exists) echo "Tên client đã tồn tại, vui lòng chọn tên khác." ;;
+                client_qr_title) echo "QR code của file client:" ;;
+                no_clients) echo "Chưa có client nào!" ;;
+                select_revoke) echo "Chọn client muốn thu hồi" ;;
+                select_one_1) echo "Chọn client [1]: " ;;
+                select_one_n) echo "Chọn client [1-%s]: " ;;
+                revoking) echo "Đang thu hồi client '%s'..." ;;
+                revoked_ok) echo "Đã thu hồi client '%s'." ;;
+                revoked_fail) echo "Thu hồi client '%s' thất bại. Xem log phía trên." ;;
+                *) echo "" ;;
+            esac
+            ;;
+        *)
+            case "$key" in
+                language_prompt) echo "Choose language / Chon ngon ngu:" ;;
+                language_opt_en) echo "1) English" ;;
+                language_opt_vi) echo "2) Tieng Viet" ;;
+                language_select) echo "Select [1-2, default 1]: " ;;
+                menu_welcome) echo "Welcome to AmneziaWG-install!" ;;
+                menu_repo) echo "Repository: ${PROJECT_REPO_URL}" ;;
+                menu_installed) echo "It looks like AmneziaWG is already installed." ;;
+                menu_status_running) echo "Service status: running" ;;
+                menu_status_stopped) echo "Service status: NOT running (use option 4 for diagnostics)" ;;
+                menu_what) echo "What do you want to do?" ;;
+                menu_add) echo "1) Add a new client" ;;
+                menu_list) echo "2) List all clients" ;;
+                menu_revoke) echo "3) Revoke existing client" ;;
+                menu_status) echo "4) Show server status" ;;
+                menu_uninstall) echo "5) Uninstall AmneziaWG" ;;
+                menu_reconfigure) echo "6) Reconfigure server" ;;
+                menu_exit) echo "7) Exit" ;;
+                menu_tip) echo "Tip: force full reinstall with: sudo bash $0 --force" ;;
+                menu_select) echo "Select an option [1-7]: " ;;
+                first_client_prompt) echo "You can now generate a client configuration." ;;
+                add_more_hint) echo "If you want to add more clients, simply run this script again!" ;;
+                client_cfg_title) echo "Client configuration" ;;
+                client_name_rule1) echo "The client name must consist of alphanumeric character(s)." ;;
+                client_name_rule2) echo "It may also include underscores or dashes and can't exceed 15 chars." ;;
+                client_name_prompt) echo "Client name: " ;;
+                client_name_empty) echo "Client name cannot be empty." ;;
+                client_name_exists) echo "A client with the specified name was already created, please choose another name." ;;
+                client_qr_title) echo "Here is your client config as a QR Code:" ;;
+                no_clients) echo "You have no existing clients!" ;;
+                select_revoke) echo "Select the existing client you want to revoke" ;;
+                select_one_1) echo "Select one client [1]: " ;;
+                select_one_n) echo "Select one client [1-%s]: " ;;
+                revoking) echo "Revoking client '%s'..." ;;
+                revoked_ok) echo "Client '%s' revoked." ;;
+                revoked_fail) echo "Failed to revoke client '%s'. Check logs above." ;;
+                *) echo "" ;;
+            esac
+            ;;
+    esac
+}
+
+select_ui_language() {
+    if [[ -n "$CLI_LANG" ]]; then
+        case "$CLI_LANG" in
+            vi|VN|vn) UI_LANG="vi" ;;
+            en|EN) UI_LANG="en" ;;
+            *) die "Invalid --lang value '$CLI_LANG' (use --lang=en or --lang=vi)." ;;
+        esac
+        return 0
+    fi
+    if [[ -n "$UI_LANG" ]]; then
+        case "$UI_LANG" in
+            vi|VN|vn) UI_LANG="vi" ;;
+            en|EN) UI_LANG="en" ;;
+            *) UI_LANG="en" ;;
+        esac
+        return 0
+    fi
+    UI_LANG="en"
+    if [[ -t 0 && "$AUTO_YES" -eq 0 ]]; then
+        local pick=""
+        echo ""
+        echo "$(ui_text language_prompt)"
+        echo "  $(ui_text language_opt_en)"
+        echo "  $(ui_text language_opt_vi)"
+        read -rp "$(ui_text language_select)" pick < /dev/tty
+        if [[ "$pick" == "2" ]]; then
+            UI_LANG="vi"
+        fi
+    fi
+}
 
 # ==============================================================================
 # apt-get update wrapper that tolerates 404s only for source packages (deb-src).
@@ -279,7 +401,55 @@ apt_wait_for_ppa_package() {
 # ==============================================================================
 
 show_help() {
-    cat << 'EOF'
+    if [[ "${UI_LANG:-en}" == "vi" ]]; then
+        cat <<EOF
+Sử dụng: sudo bash install_amneziawg_en.sh [TÙY_CHỌN]
+Script cài đặt và cấu hình AmneziaWG 2.0 cho Ubuntu (24.04 / 25.10 / 26.04) và Debian (12 / 13).
+
+Tùy chọn:
+  -h, --help            Hiện trợ giúp và thoát
+  --uninstall           Gỡ AmneziaWG và toàn bộ cấu hình
+  --diagnostic          Tạo báo cáo chẩn đoán và thoát
+  -v, --verbose         Bật log chi tiết
+  --no-color            Tắt màu terminal
+  --lang=en|vi          Chọn ngôn ngữ giao diện
+  --port=NUMBER         Đặt cổng UDP (1-65535)
+  --ssh-port=PORT       Chỉ định cổng SSH để mở trên UFW
+  --subnet=SUBNET       Dải tunnel CIDR /16-/30 (vd: 10.66.66.1/24)
+  --allow-ipv6          Bật IPv6
+  --disallow-ipv6       Tắt IPv6
+  --allow-ipv6-tunnel   Bật dual-stack IPv6 trong tunnel
+  --route-all           Route toàn bộ traffic qua VPN
+  --route-amnezia       Route theo mode Amnezia
+  --route-custom=NETS   Route custom (CIDR cách nhau dấu phẩy)
+  --isolation=on|off    Bật/tắt cách ly client trong VPN
+  --endpoint=ADDR       Endpoint ngoài: FQDN, IPv4 hoặc [IPv6]
+  --server-name=NAME    Tên server hiển thị trong app Amnezia
+  --mobile              Preset mobile + port 443/udp
+  -y, --yes             Tự động xác nhận (reboot, UFW...)
+  -f, --force           Cài lại full trên hệ thống đã cài
+  --no-tweaks           Bỏ hardening/optimization tùy chọn
+  --preset=TYPE         Preset obfuscation: default, mobile
+  --jc=N                Đặt Jc thủ công
+  --jmin=N              Đặt Jmin thủ công
+  --jmax=N              Đặt Jmax thủ công (>= Jmin)
+  --no-cps              Tắt CPS (I1)
+
+Ví dụ:
+  sudo bash install_amneziawg_en.sh
+  sudo bash install_amneziawg_en.sh --port=51820 --route-all
+  sudo bash install_amneziawg_en.sh --preset=mobile --yes
+  sudo bash install_amneziawg_en.sh --uninstall
+  sudo bash install_amneziawg_en.sh --diagnostic
+
+Sau khi cài, chạy lại script để mở menu quản lý:
+  1) Thêm client  2) Danh sách client  3) Thu hồi client
+  4) Trạng thái   5) Gỡ cài đặt         6) Cấu hình lại  7) Thoát
+
+Repository: ${PROJECT_REPO_URL}
+EOF
+    else
+        cat <<EOF
 Usage: sudo bash install_amneziawg_en.sh [OPTIONS]
 Script for installation and configuration of AmneziaWG 2.0 on Ubuntu (24.04 / 25.10 / 26.04) and Debian (12 / 13).
 
@@ -289,6 +459,7 @@ Options:
   --diagnostic          Generate diagnostic report and exit
   -v, --verbose         Verbose output for debugging (including DEBUG)
   --no-color            Disable colored terminal output
+  --lang=en|vi          UI language (default: prompt in interactive mode)
   --port=NUMBER         Set UDP port (1-65535) non-interactively
   --ssh-port=PORT       SSH port for the UFW rule (auto-detected by default;
                         comma-separated list). Use if SSH runs on a non-standard
@@ -333,11 +504,12 @@ Examples:
 
 After installation, re-run this script (no flags) to open a management menu:
   1) Add a new client  2) List clients  3) Revoke client
-  4) Status  5) Uninstall  6) Exit
+  4) Status  5) Uninstall  6) Reconfigure server  7) Exit
   Same UX style as angristan/wireguard-install.
 
-Repository: https://github.com/bivlked/amneziawg-installer
+Repository: ${PROJECT_REPO_URL}
 EOF
+    fi
     # Explicit --help exits 0; an unknown argument exits 1 (false success in CI).
     exit "${HELP_EXIT_RC:-0}"
 }
@@ -361,6 +533,64 @@ update_state() {
         exit 1
     ) 200>"${STATE_FILE}.lock" || die "Failed to write state"
     log "State: next step - $next_step"
+}
+
+write_compat_params() {
+    local server_ip
+    server_ip="${AWG_TUNNEL_SUBNET%/*}"
+    mkdir -p "$(dirname "$PARAMS_FILE")" 2>/dev/null || return 1
+    cat > "$PARAMS_FILE" <<EOF
+SERVER_WG_NIC=awg0
+SERVER_PORT=${AWG_PORT}
+SERVER_WG_IPV4=${server_ip}
+AWG_TUNNEL_SUBNET=${AWG_TUNNEL_SUBNET}
+DISABLE_IPV6=${DISABLE_IPV6}
+ALLOWED_IPS_MODE=${ALLOWED_IPS_MODE}
+ALLOWED_IPS=${ALLOWED_IPS}
+AWG_ENDPOINT=${AWG_ENDPOINT}
+AWG_SERVER_NAME=${AWG_SERVER_NAME}
+CLIENT_ISOLATION=${CLIENT_ISOLATION:-1}
+NO_TWEAKS=${NO_TWEAKS}
+EOF
+    chmod 600 "$PARAMS_FILE" 2>/dev/null || true
+}
+
+load_compat_params() {
+    [[ -f "$PARAMS_FILE" ]] || return 0
+    local line key value
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+        key="${line%%=*}"
+        value="${line#*=}"
+        case "$key" in
+            SERVER_PORT) [[ "$value" =~ ^[0-9]+$ ]] && AWG_PORT="$value" ;;
+            AWG_TUNNEL_SUBNET) [[ -n "$value" ]] && AWG_TUNNEL_SUBNET="$value" ;;
+            DISABLE_IPV6) [[ "$value" =~ ^(0|1|default)$ ]] && DISABLE_IPV6="$value" ;;
+            ALLOWED_IPS_MODE) [[ "$value" =~ ^(1|2|3|default)$ ]] && ALLOWED_IPS_MODE="$value" ;;
+            ALLOWED_IPS) ALLOWED_IPS="$value" ;;
+            AWG_ENDPOINT) AWG_ENDPOINT="$value" ;;
+            AWG_SERVER_NAME) AWG_SERVER_NAME="$value" ;;
+            CLIENT_ISOLATION) [[ "$value" =~ ^(0|1)$ ]] && CLIENT_ISOLATION="$value" ;;
+            NO_TWEAKS) [[ "$value" =~ ^(0|1)$ ]] && NO_TWEAKS="$value" ;;
+        esac
+    done < "$PARAMS_FILE"
+    log "Compatibility params loaded from $PARAMS_FILE"
+}
+
+step2_transition() {
+    log "Step 2 completed."
+    if [[ -f /var/run/reboot-required ]]; then
+        log_warn "Kernel/packages reported reboot-required. Rebooting before step 3."
+        request_reboot 3
+    fi
+    if modprobe amneziawg >/dev/null 2>&1 && lsmod | grep -q -w amneziawg; then
+        log "Kernel module is available without reboot. Continuing to step 3."
+        current_step=3
+        update_state 3
+        return 0
+    fi
+    log_warn "amneziawg module is not active in current kernel yet. Reboot required before step 3."
+    request_reboot 3
 }
 
 request_reboot() {
@@ -1909,7 +2139,7 @@ setup_fail2ban() {
     local f2b_backend="systemd"
 
     cat > /etc/fail2ban/jail.d/amneziawg.conf << JAILEOF || { log_warn "jail.d/amneziawg.conf write error"; return 1; }
-# AmneziaWG — SSH protection (managed by amneziawg-installer)
+# AmneziaWG — SSH protection (managed by installer)
 [sshd]
 enabled = true
 backend = ${f2b_backend}
@@ -2281,7 +2511,7 @@ initialize_setup() {
     check_free_space
 
     local default_port=39743
-    local default_subnet="10.9.9.1/24"
+    local default_subnet="10.66.66.1/24"
     local config_exists=0
 
     # Variable initialization
@@ -2338,6 +2568,9 @@ initialize_setup() {
     else
         log "Configuration file $CONFIG_FILE not found."
     fi
+    # WireGuard-install style compatibility file for quick post-install edits.
+    # If present, these values override defaults/config and are then validated.
+    load_compat_params
 
     # The old port from awgsetup_cfg.init: step 4 needs it to delete the stale
     # UFW rule on a port change (Issue #175). Captured BEFORE the CLI override,
@@ -2578,6 +2811,11 @@ EOF
         die "Error saving $CONFIG_FILE"
     fi
     chmod 600 "$CONFIG_FILE" || log_warn "chmod $CONFIG_FILE error"
+    if write_compat_params; then
+        log "Compatibility params written to $PARAMS_FILE"
+    else
+        log_warn "Failed to write compatibility params to $PARAMS_FILE"
+    fi
     log "Settings saved."
     export AWG_PORT AWG_TUNNEL_SUBNET DISABLE_IPV6 ALLOWED_IPS_MODE ALLOWED_IPS AWG_ENDPOINT
     log "Port: ${AWG_PORT}/udp"
@@ -2759,7 +2997,7 @@ _try_install_prebuilt_arm() {
 
     # Asset filename encodes the exact kernel version
     asset_name="amneziawg-kmod-${target_id}_${kernel}_${arch}.deb"
-    asset_url="https://github.com/bivlked/amneziawg-installer/releases/download/arm-packages/${asset_name}"
+    asset_url="${PROJECT_REPO_URL}/releases/download/arm-packages/${asset_name}"
 
     log "Trying prebuilt: $asset_name"
     tmpfile="$(mktemp /tmp/amneziawg-prebuilt-XXXXXX.deb)"
@@ -3020,7 +3258,7 @@ PPASRC
         log_error "ppa.launchpadcontent.net appears to be down — this is a"
         log_error "Launchpad infrastructure outage, not a script bug."
         log_error "Wait 10–15 minutes and re-run the script with the same args."
-        log_error "Details: https://github.com/bivlked/amneziawg-installer/issues/68"
+        log_error "Details: ${PROJECT_REPO_URL}/issues/68"
         die "Amnezia PPA is temporarily unavailable."
     fi
 
@@ -3035,9 +3273,7 @@ PPASRC
         if _try_install_prebuilt_arm; then
             log "Prebuilt kernel module installed. Installing userspace tools from PPA..."
             install_packages "amneziawg-tools" "wireguard-tools" "qrencode"
-            log "Step 2 completed (prebuilt ARM)."
-            # request_reboot always terminates the process (exit), we never return here.
-            request_reboot 3
+            step2_transition
         fi
         log "No matching prebuilt — falling back to DKMS build."
     fi
@@ -3323,7 +3559,7 @@ AWG_ENSURE_HELPER_EOF
     mkdir -p /etc/apt/apt.conf.d
     local _stage_hook=/etc/apt/apt.conf.d/.99-amneziawg-post-kernel.new
     cat > "$_stage_hook" <<'AWG_APT_HOOK_EOF'
-// amneziawg-installer (v5.12.0+): rebuild DKMS module after kernel upgrades.
+// installer (v5.12.0+): rebuild DKMS module after kernel upgrades.
 // Generated by install_amneziawg.sh — do not edit; re-run the installer to refresh.
 DPkg::Post-Invoke {"if [ -x /usr/local/sbin/amneziawg-ensure-module ]; then /usr/local/sbin/amneziawg-ensure-module --hook >>/var/log/amneziawg-ensure-module.log 2>&1 || true; fi";};
 AWG_APT_HOOK_EOF
@@ -3366,7 +3602,7 @@ AWG_LOGROTATE_EOF
     cat > "$_stage_unit" <<'AWG_SYSTEMD_UNIT_EOF'
 [Unit]
 Description=Ensure amneziawg kernel module is built and loaded
-Documentation=https://github.com/bivlked/amneziawg-installer
+Documentation=${PROJECT_REPO_URL}
 Before=awg-quick@awg0.service
 After=systemd-modules-load.service local-fs.target
 ConditionPathExists=/usr/local/sbin/amneziawg-ensure-module
@@ -3406,8 +3642,7 @@ AWG_SYSTEMD_UNIT_EOF
         log "DKMS status OK."
     fi
 
-    log "Step 2 completed."
-    request_reboot 3
+    step2_transition
 }
 
 # ==============================================================================
@@ -3722,9 +3957,9 @@ step99_finish() {
             log "No clients created (--yes). Add one later: sudo bash $0"
         else
             echo ""
-            echo "You can now generate a client configuration."
+            echo "$(ui_text first_client_prompt)"
             menu_add_client
-            echo -e "\033[0;32mIf you want to add more clients, simply run this script again!\033[0m"
+            echo -e "\033[0;32m$(ui_text add_more_hint)\033[0m"
         fi
     else
         log "Existing clients kept ($peer_count). Manage them by re-running: sudo bash $0"
@@ -3744,26 +3979,12 @@ ensure_manage_script() {
     fi
     log_warn "Management scripts missing under $AWG_DIR — re-downloading..."
     mkdir -p "$AWG_DIR" || die "Cannot create $AWG_DIR"
-    # Prefer SHA256 verify when branch matches release; skip verify on custom AWG_BRANCH.
-    if [[ -z "${AWG_BRANCH:-}" || "$AWG_BRANCH" == "v${SCRIPT_VERSION}" ]]; then
-        [[ ! -f "$COMMON_SCRIPT_PATH" ]] && \
-            _secure_download "$COMMON_SCRIPT_URL" "$COMMON_SCRIPT_PATH" \
-                "$COMMON_SCRIPT_SHA256" "awg_common.sh"
-        [[ ! -f "$MANAGE_SCRIPT_PATH" ]] && \
-            _secure_download "$MANAGE_SCRIPT_URL" "$MANAGE_SCRIPT_PATH" \
-                "$MANAGE_SCRIPT_SHA256" "manage_amneziawg.sh"
-    else
-        if [[ ! -f "$COMMON_SCRIPT_PATH" ]]; then
-            curl -fLso "$COMMON_SCRIPT_PATH" --max-time 60 --retry 2 "$COMMON_SCRIPT_URL" \
-                || die "Failed to download awg_common.sh"
-            chmod 700 "$COMMON_SCRIPT_PATH"
-        fi
-        if [[ ! -f "$MANAGE_SCRIPT_PATH" ]]; then
-            curl -fLso "$MANAGE_SCRIPT_PATH" --max-time 60 --retry 2 "$MANAGE_SCRIPT_URL" \
-                || die "Failed to download manage_amneziawg.sh"
-            chmod 700 "$MANAGE_SCRIPT_PATH"
-        fi
-    fi
+    [[ ! -f "$COMMON_SCRIPT_PATH" ]] && \
+        _secure_download "$COMMON_SCRIPT_URL" "$COMMON_SCRIPT_PATH" \
+            "$COMMON_SCRIPT_SHA256" "awg_common.sh"
+    [[ ! -f "$MANAGE_SCRIPT_PATH" ]] && \
+        _secure_download "$MANAGE_SCRIPT_URL" "$MANAGE_SCRIPT_PATH" \
+            "$MANAGE_SCRIPT_SHA256" "manage_amneziawg.sh"
 }
 
 run_manage() {
@@ -3775,21 +3996,21 @@ run_manage() {
 menu_add_client() {
     local CLIENT_NAME="" CLIENT_EXISTS=1
     echo ""
-    echo "Client configuration"
+    echo "$(ui_text client_cfg_title)"
     echo ""
-    echo "The client name must consist of alphanumeric character(s)."
-    echo "It may also include underscores or dashes and can't exceed 15 chars."
+    echo "$(ui_text client_name_rule1)"
+    echo "$(ui_text client_name_rule2)"
     until [[ ${CLIENT_NAME} =~ ^[a-zA-Z0-9_-]+$ && ${CLIENT_EXISTS} == '0' && ${#CLIENT_NAME} -lt 16 ]]; do
-        read -rp "Client name: " -e CLIENT_NAME < /dev/tty
+        read -rp "$(ui_text client_name_prompt)" -e CLIENT_NAME < /dev/tty
         if [[ -z "$CLIENT_NAME" ]]; then
-            echo "Client name cannot be empty."
+            echo "$(ui_text client_name_empty)"
             CLIENT_EXISTS=1
             continue
         fi
         if grep -qxF "#_Name = ${CLIENT_NAME}" "$SERVER_CONF_FILE" 2>/dev/null; then
             CLIENT_EXISTS=1
             echo ""
-            echo -e "\033[0;33mA client with the specified name was already created, please choose another name.\033[0m"
+            echo -e "\033[0;33m$(ui_text client_name_exists)\033[0m"
             echo ""
         else
             CLIENT_EXISTS=0
@@ -3804,7 +4025,7 @@ menu_add_client() {
             echo -e "\033[0;32mQR code image: $AWG_DIR/${CLIENT_NAME}.png\033[0m"
         fi
         if command -v qrencode &>/dev/null; then
-            echo -e "\033[0;32m\nHere is your client config as a QR Code:\n\033[0m"
+            echo -e "\033[0;32m\n$(ui_text client_qr_title)\n\033[0m"
             qrencode -t ansiutf8 -l L <"$AWG_DIR/${CLIENT_NAME}.conf" || true
             echo ""
         fi
@@ -3821,26 +4042,32 @@ menu_revoke_client() {
     NUMBER_OF_CLIENTS=$(grep -c -E '^#_Name = ' "$SERVER_CONF_FILE" 2>/dev/null) || NUMBER_OF_CLIENTS=0
     if [[ ${NUMBER_OF_CLIENTS} -eq 0 ]]; then
         echo ""
-        echo "You have no existing clients!"
+        echo "$(ui_text no_clients)"
         return 0
     fi
 
     echo ""
-    echo "Select the existing client you want to revoke"
+    echo "$(ui_text select_revoke)"
     grep -E '^#_Name = ' "$SERVER_CONF_FILE" | sed 's/^#_Name = //' | nl -s ') '
     until [[ ${CLIENT_NUMBER} =~ ^[0-9]+$ && ${CLIENT_NUMBER} -ge 1 && ${CLIENT_NUMBER} -le ${NUMBER_OF_CLIENTS} ]]; do
         if [[ ${NUMBER_OF_CLIENTS} -eq 1 ]]; then
-            read -rp "Select one client [1]: " CLIENT_NUMBER < /dev/tty
+            read -rp "$(ui_text select_one_1)" CLIENT_NUMBER < /dev/tty
         else
-            read -rp "Select one client [1-${NUMBER_OF_CLIENTS}]: " CLIENT_NUMBER < /dev/tty
+            printf -v _sel_prompt "$(ui_text select_one_n)" "${NUMBER_OF_CLIENTS}"
+            read -rp "$_sel_prompt" CLIENT_NUMBER < /dev/tty
         fi
     done
 
     CLIENT_NAME=$(grep -E '^#_Name = ' "$SERVER_CONF_FILE" | sed 's/^#_Name = //' | sed -n "${CLIENT_NUMBER}"p)
     echo ""
-    echo "Revoking client '${CLIENT_NAME}'..."
-    run_manage --yes remove "$CLIENT_NAME"
-    echo -e "\033[0;32mClient '${CLIENT_NAME}' revoked.\033[0m"
+    printf "$(ui_text revoking)\n" "$CLIENT_NAME"
+    if run_manage --yes remove "$CLIENT_NAME"; then
+        printf -v _revoked_ok "$(ui_text revoked_ok)" "$CLIENT_NAME"
+        echo -e "\033[0;32m${_revoked_ok}\033[0m"
+    else
+        printf -v _revoked_fail "$(ui_text revoked_fail)" "$CLIENT_NAME"
+        echo -e "\033[0;31m${_revoked_fail}\033[0m"
+    fi
 }
 
 menu_show_status() {
@@ -3854,28 +4081,30 @@ menu_show_status() {
 
 manageMenu() {
     local MENU_OPTION=""
+    MENU_ACTION="exit"
     echo ""
-    echo "Welcome to AmneziaWG-install!"
-    echo "The git repository is available at: https://github.com/bivlked/amneziawg-installer"
+    echo "$(ui_text menu_welcome)"
+    echo "$(ui_text menu_repo)"
     echo ""
-    echo "It looks like AmneziaWG is already installed."
+    echo "$(ui_text menu_installed)"
     if systemctl is-active --quiet awg-quick@awg0 2>/dev/null; then
-        echo -e "Service status: \033[0;32mrunning\033[0m"
+        echo -e "$(ui_text menu_status_running)" | sed 's/running/\033[0;32mrunning\033[0m/'
     else
-        echo -e "Service status: \033[0;33mNOT running\033[0m (use option 4 for diagnostics)"
+        echo -e "$(ui_text menu_status_stopped)" | sed 's/CHƯA chạy/\033[0;33mCHƯA chạy\033[0m/; s/NOT running/\033[0;33mNOT running\033[0m/'
     fi
     echo ""
-    echo "What do you want to do?"
-    echo "   1) Add a new client"
-    echo "   2) List all clients"
-    echo "   3) Revoke existing client"
-    echo "   4) Show server status"
-    echo "   5) Uninstall AmneziaWG"
-    echo "   6) Exit"
+    echo "$(ui_text menu_what)"
+    echo "   $(ui_text menu_add)"
+    echo "   $(ui_text menu_list)"
+    echo "   $(ui_text menu_revoke)"
+    echo "   $(ui_text menu_status)"
+    echo "   $(ui_text menu_uninstall)"
+    echo "   $(ui_text menu_reconfigure)"
+    echo "   $(ui_text menu_exit)"
     echo ""
-    echo "Tip: force full reinstall with: sudo bash $0 --force"
-    until [[ ${MENU_OPTION} =~ ^[1-6]$ ]]; do
-        read -rp "Select an option [1-6]: " MENU_OPTION < /dev/tty
+    echo "$(ui_text menu_tip)"
+    until [[ ${MENU_OPTION} =~ ^[1-7]$ ]]; do
+        read -rp "$(ui_text menu_select)" MENU_OPTION < /dev/tty
     done
     case "${MENU_OPTION}" in
     1) menu_add_client ;;
@@ -3883,14 +4112,33 @@ manageMenu() {
     3) menu_revoke_client ;;
     4) menu_show_status ;;
     5) step_uninstall ;;
-    6) exit 0 ;;
+    6)
+        MENU_ACTION="reconfigure"
+        FORCE_REINSTALL=1
+        ;;
+    7) exit 0 ;;
     esac
+}
+
+should_open_manage_menu() {
+    [[ "$FORCE_REINSTALL" -eq 1 ]] && return 1
+    [[ -f "$SERVER_CONF_FILE" ]] || return 1
+    if [[ -f "$STATE_FILE" ]]; then
+        local _saved_step
+        _saved_step="$(tr -d '[:space:]' < "$STATE_FILE" 2>/dev/null || true)"
+        if [[ "$_saved_step" =~ ^[0-9]+$ ]] && (( _saved_step < 99 )); then
+            log_warn "Unfinished installation detected (state=$_saved_step). Resuming installer instead of opening manage menu."
+            return 1
+        fi
+    fi
+    return 0
 }
 
 # ==============================================================================
 # Main execution loop
 # ==============================================================================
 
+select_ui_language
 if [[ "$HELP" -eq 1 ]]; then show_help; fi
 if [[ "$UNINSTALL" -eq 1 ]]; then step_uninstall; fi
 if [[ "$DIAGNOSTIC" -eq 1 ]]; then create_diagnostic_report; exit 0; fi
@@ -3902,11 +4150,13 @@ if [[ "${AWG_FORCE_REINSTALL:-0}" == "1" ]]; then
 fi
 
 # Already installed → interactive manage menu (like angristan/wireguard-install).
-# Pass --force to reinstall instead of opening the menu.
-if [[ "$FORCE_REINSTALL" -ne 1 ]] && [[ -f "$SERVER_CONF_FILE" ]]; then
+# Pass --force (or choose menu option 6) to reconfigure server settings.
+if should_open_manage_menu; then
     if [ "$(id -u)" -ne 0 ]; then die "Run the script as root (sudo bash $0)."; fi
     manageMenu
-    exit 0
+    if [[ "${MENU_ACTION:-exit}" != "reconfigure" ]]; then
+        exit 0
+    fi
 fi
 
 initialize_setup
