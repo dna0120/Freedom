@@ -28,6 +28,7 @@ Menu sẽ hiện các lựa chọn:
 Trong quá trình cài (interactive), script sẽ hỏi:
 - **DNS** cho client (mặc định `1.1.1.1`, `1.0.0.1`)
 - **MTU** — tự nhận IP client đang SSH vào VM, probe path MTU tới IP đó (fallback `1.1.1.1`), rồi gợi ý (thường ~1280–1420)
+- **BBR** — nếu chưa bật thì hỏi có muốn bật không (mặc định **Y**)
 
 Hoặc truyền sẵn:
 

@@ -56,6 +56,7 @@ CLI_SERVER_NAME=""
 CLI_MOBILE=0
 CLI_DNS=""
 CLI_MTU=""
+CLI_BBR=""
 
 # --- Auto-cleanup of temporary files ---
 _install_temp_files=()
@@ -113,6 +114,9 @@ while [[ $# -gt 0 ]]; do
         --jmax=*)        CLI_JMAX="${1#*=}" ;;
         --dns=*)         CLI_DNS="${1#*=}" ;;
         --mtu=*)         CLI_MTU="${1#*=}" ;;
+        --bbr=*)         CLI_BBR="${1#*=}" ;;
+        --bbr)           CLI_BBR="on" ;;
+        --no-bbr)        CLI_BBR="off" ;;
         *) echo "Unknown argument: $1" >&2; HELP=1; HELP_EXIT_RC=1 ;;
     esac
     shift
@@ -172,6 +176,16 @@ bbr_is_enabled() {
     [[ "$cc" == "bbr" ]]
 }
 
+bbr_is_available() {
+    # Available if already active, listed in available_congestion_control, or module loads.
+    local avail
+    avail="$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)"
+    [[ "$avail" == *bbr* ]] && return 0
+    modprobe tcp_bbr >/dev/null 2>&1 || true
+    avail="$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)"
+    [[ "$avail" == *bbr* ]]
+}
+
 configure_bbr() {
     case "${ENABLE_BBR:-1}" in
         0|1) : ;;
@@ -180,24 +194,42 @@ configure_bbr() {
 
     if bbr_is_enabled; then
         ENABLE_BBR=1
-        log "BBR is already enabled."
+        log "$(ui_text bbr_already)"
+        return 0
+    fi
+
+    if ! bbr_is_available; then
+        ENABLE_BBR=0
+        log_warn "$(ui_text bbr_unavailable)"
+        return 0
+    fi
+
+    if [[ -n "${CLI_BBR:-}" ]]; then
+        case "$CLI_BBR" in
+            1|on|yes) ENABLE_BBR=1; log "BBR from CLI: enabled" ;;
+            0|off|no) ENABLE_BBR=0; log "BBR from CLI: disabled" ;;
+            *) die "Invalid --bbr value '$CLI_BBR' (use on/off)." ;;
+        esac
         return 0
     fi
 
     if [[ "$AUTO_YES" -eq 1 ]]; then
         ENABLE_BBR=1
-        log "BBR is not active; enabling by default (--yes)."
+        log "$(ui_text bbr_yes_default)"
         return 0
     fi
 
-    local bbr_ans="Y"
-    read -rp "BBR is not enabled. Enable BBR now? [Y/n]: " bbr_ans < /dev/tty
-    if [[ "$bbr_ans" =~ ^[[:space:]]*[Nn][Oo]?[[:space:]]*$ ]]; then
+    local bbr_ans=""
+    echo ""
+    log "$(ui_text bbr_intro)"
+    read -rp "$(ui_text bbr_prompt)" bbr_ans < /dev/tty
+    if [[ "$bbr_ans" =~ ^[[:space:]]*[Nn]([Oo])?[[:space:]]*$ ]]; then
         ENABLE_BBR=0
-        log_warn "BBR will stay disabled by your choice."
+        log_warn "$(ui_text bbr_disabled)"
     else
+        # Empty / Y / yes / anything else → default ON
         ENABLE_BBR=1
-        log "BBR will be enabled."
+        log "$(ui_text bbr_enabled)"
     fi
 }
 
@@ -469,6 +501,13 @@ ui_text() {
                 mtu_prompt) echo "MTU tunnel cho client" ;;
                 mtu_note) echo "Ghi chú MTU: script đo path MTU tới IP client đang SSH vào VM (fallback 1.1.1.1). 1280 = an toàn IPv6; VPS Ethernet thường ~1420." ;;
                 mtu_invalid) echo "MTU không hợp lệ" ;;
+                bbr_already) echo "BBR đã được bật trên hệ thống." ;;
+                bbr_unavailable) echo "Kernel không hỗ trợ BBR — bỏ qua." ;;
+                bbr_yes_default) echo "BBR chưa bật; sẽ bật theo mặc định (--yes)." ;;
+                bbr_intro) echo "BBR (TCP congestion control) chưa được bật. Nên bật để VPN/TCP nhanh và ổn định hơn." ;;
+                bbr_prompt) echo "Bật BBR ngay? [Y/n]: " ;;
+                bbr_enabled) echo "Sẽ bật BBR." ;;
+                bbr_disabled) echo "Giữ tắt BBR theo lựa chọn của bạn." ;;
                 *) echo "" ;;
             esac
             ;;
@@ -515,6 +554,13 @@ ui_text() {
                 mtu_prompt) echo "Tunnel MTU for clients" ;;
                 mtu_note) echo "MTU note: probes path MTU toward your SSH client IP (fallback 1.1.1.1). 1280 = IPv6-safe floor; typical Ethernet VPS ~1420." ;;
                 mtu_invalid) echo "Invalid MTU" ;;
+                bbr_already) echo "BBR is already enabled on this system." ;;
+                bbr_unavailable) echo "Kernel does not support BBR — skipping." ;;
+                bbr_yes_default) echo "BBR is not active; enabling by default (--yes)." ;;
+                bbr_intro) echo "BBR (TCP congestion control) is not enabled. Recommended for faster/stabler VPN TCP." ;;
+                bbr_prompt) echo "Enable BBR now? [Y/n]: " ;;
+                bbr_enabled) echo "BBR will be enabled." ;;
+                bbr_disabled) echo "BBR will stay disabled by your choice." ;;
                 *) echo "" ;;
             esac
             ;;
@@ -713,6 +759,8 @@ Tùy chọn:
   --jmax=N              Đặt Jmax thủ công (>= Jmin)
   --dns=IP[,IP2]        DNS cho client (mặc định 1.1.1.1,1.0.0.1)
   --mtu=NUMBER          MTU tunnel (576-9100; mặc định probe tới IP SSH client)
+  --bbr / --bbr=on|off  Bật/tắt BBR (mặc định hỏi; chưa bật thì default Y)
+  --no-bbr              Tắt BBR
   --no-cps              Tắt CPS (I1)
 
 Ví dụ:
@@ -772,6 +820,8 @@ Options:
   --jmax=N             Set Jmax manually (0-1280, overrides preset, must be >= Jmin)
   --dns=IP[,IP2]       Client DNS resolvers (default 1.1.1.1,1.0.0.1)
   --mtu=NUMBER         Tunnel MTU 576-9100 (default: probe toward SSH client IP)
+  --bbr / --bbr=on|off Enable/disable BBR (default: ask; Y if not enabled)
+  --no-bbr             Disable BBR
   --no-cps              Disable CPS (the I1 parameter) - needed if the desktop
                         AmneziaVPN on macOS hangs on connect (issue #159)
 
@@ -2095,6 +2145,13 @@ SYSEOF
 net.ipv6.conf.all.forwarding = 1
 SYSEOF
     fi
+    if [[ "${ENABLE_BBR:-1}" -eq 1 ]]; then
+        modprobe tcp_bbr >/dev/null 2>&1 || true
+        cat >> "$f" << SYSEOF
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+SYSEOF
+    fi
     sysctl -p "$f" >/dev/null 2>&1 || log_warn "sysctl -p error"
     log "Minimal sysctl configured."
 }
@@ -2195,6 +2252,9 @@ kernel.printk = 3 4 1 3
 EOF
 
     log "Applying sysctl..."
+    if [[ "${ENABLE_BBR:-1}" -eq 1 ]]; then
+        modprobe tcp_bbr >/dev/null 2>&1 || true
+    fi
     if ! sysctl -p "$f" >/dev/null 2>&1; then
         # nf_conntrack may be unavailable before module is loaded
         log_warn "Some sysctl parameters did not apply (nf_conntrack will be available later)."
@@ -2966,6 +3026,10 @@ initialize_setup() {
             if ! validate_cidr_list "$ALLOWED_IPS"; then
                 die "Invalid ALLOWED_IPS in config: '$ALLOWED_IPS'. Delete $CONFIG_FILE and re-run the installer."
             fi
+        fi
+        # Reconfigure / resume: still offer BBR if the kernel is not using it yet.
+        if [[ -n "${CLI_BBR:-}" ]] || ! bbr_is_enabled; then
+            configure_bbr
         fi
         # Allow CLI overrides for DNS/MTU even on resume/reconfigure.
         if [[ -n "${CLI_DNS:-}" || -z "${CLIENT_DNS_1:-}" ]]; then configure_client_dns; fi
