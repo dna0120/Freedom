@@ -393,7 +393,7 @@ configure_mtu() {
         return 0
     fi
     if [[ -n "${AWG_MTU:-}" ]] && [[ "$AWG_MTU" =~ ^[0-9]+$ ]] && (( AWG_MTU >= 576 && AWG_MTU <= 9100 )); then
-        if [[ "${config_exists:-0}" -eq 1 ]]; then
+        if [[ "${config_exists:-0}" -eq 1 && "${MENU_ACTION:-}" != "reconfigure" ]]; then
             log "Tunnel MTU from saved config: ${AWG_MTU}"
             return 0
         fi
@@ -432,6 +432,10 @@ configure_mtu() {
     else
         suggested=1420
         log_warn "Path MTU probe failed; using practical default tunnel MTU ${suggested}"
+    fi
+    # Reconfigure: Enter keeps the currently saved MTU.
+    if [[ "${MENU_ACTION:-}" == "reconfigure" ]] && [[ "${AWG_MTU:-}" =~ ^[0-9]+$ ]] && (( AWG_MTU >= 576 && AWG_MTU <= 9100 )); then
+        suggested="$AWG_MTU"
     fi
     if [[ "$AUTO_YES" -eq 1 ]]; then
         AWG_MTU="$suggested"
@@ -474,7 +478,7 @@ ui_text() {
                 menu_uninstall) echo "5) Gỡ AmneziaWG" ;;
                 menu_reconfigure) echo "6) Cấu hình lại server" ;;
                 menu_exit) echo "7) Thoát" ;;
-                menu_tip) echo "Mẹo: cài lại full bằng: sudo bash $0 --force" ;;
+                menu_tip) echo "Mẹo: cấu hình lại = hỏi lại tùy chọn (không cài lại full). Cài lại full: sudo bash $0 --force" ;;
                 menu_select) echo "Chọn tùy chọn [1-7]: " ;;
                 first_client_prompt) echo "Bây giờ bạn có thể tạo cấu hình client đầu tiên." ;;
                 add_more_hint) echo "Muốn thêm client nữa thì chỉ cần chạy lại script này!" ;;
@@ -529,7 +533,7 @@ ui_text() {
                 menu_uninstall) echo "5) Uninstall AmneziaWG" ;;
                 menu_reconfigure) echo "6) Reconfigure server" ;;
                 menu_exit) echo "7) Exit" ;;
-                menu_tip) echo "Tip: force full reinstall with: sudo bash $0 --force" ;;
+                menu_tip) echo "Tip: reconfigure re-asks settings (no full reinstall). Full reinstall: sudo bash $0 --force" ;;
                 menu_select) echo "Select an option [1-7]: " ;;
                 first_client_prompt) echo "You can now generate a client configuration." ;;
                 add_more_hint) echo "If you want to add more clients, simply run this script again!" ;;
@@ -1376,7 +1380,22 @@ configure_client_isolation() {
         on)  CLIENT_ISOLATION=1; log "Client isolation from CLI: enabled." ;;
         off) CLIENT_ISOLATION=0; log "Client isolation from CLI: disabled." ;;
         default)
-            if [[ -n "${CLIENT_ISOLATION:-}" ]]; then
+            if [[ "${MENU_ACTION:-}" == "reconfigure" && "$AUTO_YES" -eq 0 ]]; then
+                local r_iso _iso_def="${CLIENT_ISOLATION:-1}"
+                if [[ "$_iso_def" -eq 1 ]]; then
+                    read -rp "Isolate VPN clients from each other? [Y/n]: " r_iso < /dev/tty
+                    case "$r_iso" in
+                        [nN]*) CLIENT_ISOLATION=0; log "Client isolation disabled: clients will see each other inside the VPN." ;;
+                        *)     CLIENT_ISOLATION=1; log "Client isolation enabled." ;;
+                    esac
+                else
+                    read -rp "Isolate VPN clients from each other? [y/N]: " r_iso < /dev/tty
+                    case "$r_iso" in
+                        [yY]*) CLIENT_ISOLATION=1; log "Client isolation enabled." ;;
+                        *)     CLIENT_ISOLATION=0; log "Client isolation disabled: clients will see each other inside the VPN." ;;
+                    esac
+                fi
+            elif [[ -n "${CLIENT_ISOLATION:-}" ]]; then
                 log "Client isolation (from config): $( [[ "$CLIENT_ISOLATION" -eq 1 ]] && echo enabled || echo disabled )."
             elif [[ "${config_exists:-0}" -eq 1 ]]; then
                 CLIENT_ISOLATION=1
@@ -1522,6 +1541,15 @@ configure_server_name() {
             || die "Invalid --server-name: no quotes, backslash or control characters, at most 128 bytes."
         AWG_SERVER_NAME="$_name"
         log "Server name from CLI: ${AWG_SERVER_NAME}"
+    elif [[ "${MENU_ACTION:-}" == "reconfigure" && "$AUTO_YES" -eq 0 ]]; then
+        local input_name _cur="${AWG_SERVER_NAME:-AWG Server}"
+        while true; do
+            read -rp "Server name in the Amnezia app [${_cur}]: " input_name < /dev/tty
+            input_name=$(_trim_ws "$input_name")
+            if [[ -z "$input_name" ]]; then AWG_SERVER_NAME="$_cur"; break; fi
+            if validate_server_name "$input_name"; then AWG_SERVER_NAME="$input_name"; break; fi
+            log_warn "No quotes, backslash or control characters, at most 128 bytes. Try again."
+        done
     elif [[ -n "${AWG_SERVER_NAME:-}" ]]; then
         _name=$(_trim_ws "$AWG_SERVER_NAME")
         if validate_server_name "$_name"; then
@@ -2990,9 +3018,13 @@ initialize_setup() {
         AWG_ENDPOINT=""
     fi
 
-    # Request settings from user only on first run
-    if [[ "$config_exists" -eq 0 ]]; then
-        log "Requesting settings from user (first run)."
+    # Request settings: first install OR menu "reconfigure".
+    if [[ "$config_exists" -eq 0 || "${MENU_ACTION:-}" == "reconfigure" ]]; then
+        if [[ "${MENU_ACTION:-}" == "reconfigure" ]]; then
+            log "Reconfigure: ask again for settings (Enter = keep current value where shown)."
+        else
+            log "Requesting settings from user (first run)."
+        fi
         # Interactive input: a typo does not kill the install (the validator
         # runs in a subshell -> die prints the error but only terminates the
         # subshell, and the prompt repeats). The final validate_* calls
@@ -3016,10 +3048,10 @@ initialize_setup() {
             done
         fi
         validate_subnet "$AWG_TUNNEL_SUBNET"
-        if [[ "$DISABLE_IPV6" == "default" ]]; then configure_ipv6; fi
-        # BBR right after IPv6 so it is visible like other system toggles.
+        # Always re-ask these on first run / reconfigure (saved values are defaults).
+        if [[ "$CLI_DISABLE_IPV6" == "default" ]]; then configure_ipv6; fi
         configure_bbr
-        if [[ "$ALLOWED_IPS_MODE" == "default" ]]; then configure_routing_mode; fi
+        if [[ "$CLI_ROUTING_MODE" == "default" ]]; then configure_routing_mode; fi
         configure_client_dns
         configure_mtu
     else
@@ -3029,11 +3061,10 @@ initialize_setup() {
                 die "Invalid ALLOWED_IPS in config: '$ALLOWED_IPS'. Delete $CONFIG_FILE and re-run the installer."
             fi
         fi
-        # Always re-ask on reconfigure / CLI; also ask if BBR is not active yet.
-        if [[ "${MENU_ACTION:-}" == "reconfigure" || -n "${CLI_BBR:-}" ]] || ! bbr_is_enabled; then
+        # Resume unfinished install: offer BBR only if not active yet / CLI override.
+        if [[ -n "${CLI_BBR:-}" ]] || ! bbr_is_enabled; then
             configure_bbr
         fi
-        # Allow CLI overrides for DNS/MTU even on resume/reconfigure.
         if [[ -n "${CLI_DNS:-}" || -z "${CLIENT_DNS_1:-}" ]]; then configure_client_dns; fi
         if [[ -n "${CLI_MTU:-}" || -z "${AWG_MTU:-}" ]]; then configure_mtu; fi
     fi
@@ -3221,7 +3252,18 @@ EOF
     fi
 
     # Loading state
-    if [[ -f "$STATE_FILE" ]]; then
+    if [[ "${MENU_ACTION:-}" == "reconfigure" ]]; then
+        # Soft reconfigure: keep AmneziaWG packages/module, re-apply settings from step 4.
+        # Avoids apt upgrade + reboot that a full step-1 reinstall would trigger.
+        log "Reconfigure: applying sysctl, then continuing from step 4 (no full reinstall/reboot)."
+        if [[ "${NO_TWEAKS:-0}" -eq 0 ]]; then
+            setup_advanced_sysctl
+        else
+            setup_minimal_sysctl
+        fi
+        current_step=4
+        update_state 4
+    elif [[ -f "$STATE_FILE" ]]; then
         current_step=$(cat "$STATE_FILE")
         if ! [[ "$current_step" =~ ^[0-9]+$ ]]; then
             log_warn "$STATE_FILE corrupted."
@@ -3241,7 +3283,7 @@ EOF
     # steps 4-6, the new values would live only in awgsetup_cfg.init while
     # awg0.conf, client configs and UFW rules silently kept the old ones
     # (Issue #175). Roll back to step 4: firewall (port) + config regen (step 6).
-    if (( current_step > 4 )) && { [[ -n "$CLI_PORT" ]] || [[ -n "$CLI_SUBNET" ]] \
+    if [[ "${MENU_ACTION:-}" != "reconfigure" ]] && (( current_step > 4 )) && { [[ -n "$CLI_PORT" ]] || [[ -n "$CLI_SUBNET" ]] \
         || [[ -n "$CLI_SSH_PORT" ]] || [[ "$CLI_ROUTING_MODE" != "default" ]] \
         || [[ -n "$CLI_ENDPOINT" ]] || [[ "$CLI_DISABLE_IPV6" != "default" ]] \
         || [[ "${CLI_ALLOW_IPV6_TUNNEL:-0}" -eq 1 ]] || [[ -n "${CLI_PRESET:-}" ]] \
