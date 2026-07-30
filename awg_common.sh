@@ -363,7 +363,7 @@ _try_local_ip() {
     return 0
 }
 
-# Note: apt_update_tolerant() is defined inline in install_amneziawg_en.sh
+# Note: apt_update_tolerant() is defined inline in install_amneziawg.sh
 # (needed in steps 1-2 before this file is downloaded). Not duplicated here.
 
 # ==============================================================================
@@ -371,7 +371,7 @@ _try_local_ip() {
 # ==============================================================================
 
 # Random number [min, max] via /dev/urandom (uint32 support).
-# Mirrors install_amneziawg_en.sh:rand_range — needed here for tests and regen.
+# Mirrors install_amneziawg.sh:rand_range — needed here for tests and regen.
 rand_range() {
     local min=$1 max=$2
     local range=$((max - min + 1))

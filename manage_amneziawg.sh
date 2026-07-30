@@ -384,8 +384,8 @@ _check_common_compat() {
         fi
     fi
     die "awg_common.sh (${have:-no version}) is incompatible with manage_amneziawg.sh ($want). Update both halves to the same version:
-  wget -O $AWG_DIR/manage_amneziawg.sh https://raw.githubusercontent.com/dna0120/Freedom/main/manage_amneziawg_en.sh
-  wget -O $COMMON_SCRIPT_PATH https://raw.githubusercontent.com/dna0120/Freedom/main/awg_common_en.sh
+  wget -O $AWG_DIR/manage_amneziawg.sh https://raw.githubusercontent.com/dna0120/Freedom/main/manage_amneziawg.sh
+  wget -O $COMMON_SCRIPT_PATH https://raw.githubusercontent.com/dna0120/Freedom/main/awg_common.sh
   chmod 700 $AWG_DIR/manage_amneziawg.sh $COMMON_SCRIPT_PATH"
 }
 
@@ -406,7 +406,7 @@ check_dependencies() {
         ok=0
     fi
     if [[ "$ok" -eq 0 ]]; then
-        die "Installation files not found. Run install_amneziawg_en.sh."
+        die "Installation files not found. Run install_amneziawg.sh."
     fi
 
     if ! command -v awg &>/dev/null; then die "'awg' not found."; fi
