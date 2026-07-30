@@ -177,7 +177,6 @@ bbr_is_enabled() {
 }
 
 bbr_is_available() {
-    # Available if already active, listed in available_congestion_control, or module loads.
     local avail
     avail="$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)"
     [[ "$avail" == *bbr* ]] && return 0
@@ -191,18 +190,6 @@ configure_bbr() {
         0|1) : ;;
         *) ENABLE_BBR=1 ;;
     esac
-
-    if bbr_is_enabled; then
-        ENABLE_BBR=1
-        log "$(ui_text bbr_already)"
-        return 0
-    fi
-
-    if ! bbr_is_available; then
-        ENABLE_BBR=0
-        log_warn "$(ui_text bbr_unavailable)"
-        return 0
-    fi
 
     if [[ -n "${CLI_BBR:-}" ]]; then
         case "$CLI_BBR" in
@@ -219,15 +206,25 @@ configure_bbr() {
         return 0
     fi
 
+    if ! bbr_is_enabled && ! bbr_is_available; then
+        ENABLE_BBR=0
+        log_warn "$(ui_text bbr_unavailable)"
+        return 0
+    fi
+
+    # Always ask interactively (even if BBR is already on) so the option is visible.
     local bbr_ans=""
     echo ""
-    log "$(ui_text bbr_intro)"
+    if bbr_is_enabled; then
+        echo "$(ui_text bbr_status_on)"
+    else
+        echo "$(ui_text bbr_status_off)"
+    fi
     read -rp "$(ui_text bbr_prompt)" bbr_ans < /dev/tty
     if [[ "$bbr_ans" =~ ^[[:space:]]*[Nn]([Oo])?[[:space:]]*$ ]]; then
         ENABLE_BBR=0
         log_warn "$(ui_text bbr_disabled)"
     else
-        # Empty / Y / yes / anything else → default ON
         ENABLE_BBR=1
         log "$(ui_text bbr_enabled)"
     fi
@@ -503,11 +500,13 @@ ui_text() {
                 mtu_invalid) echo "MTU không hợp lệ" ;;
                 bbr_already) echo "BBR đã được bật trên hệ thống." ;;
                 bbr_unavailable) echo "Kernel không hỗ trợ BBR — bỏ qua." ;;
-                bbr_yes_default) echo "BBR chưa bật; sẽ bật theo mặc định (--yes)." ;;
-                bbr_intro) echo "BBR (TCP congestion control) chưa được bật. Nên bật để VPN/TCP nhanh và ổn định hơn." ;;
-                bbr_prompt) echo "Bật BBR ngay? [Y/n]: " ;;
-                bbr_enabled) echo "Sẽ bật BBR." ;;
-                bbr_disabled) echo "Giữ tắt BBR theo lựa chọn của bạn." ;;
+                bbr_yes_default) echo "BBR: bật theo mặc định (--yes)." ;;
+                bbr_status_on) echo "Trạng thái BBR: ĐANG BẬT." ;;
+                bbr_status_off) echo "Trạng thái BBR: CHƯA BẬT." ;;
+                bbr_intro) echo "BBR (TCP congestion control) giúp VPN/TCP nhanh và ổn định hơn." ;;
+                bbr_prompt) echo "Bật / giữ BBR? [Y/n]: " ;;
+                bbr_enabled) echo "Sẽ dùng BBR." ;;
+                bbr_disabled) echo "Không dùng BBR theo lựa chọn của bạn." ;;
                 *) echo "" ;;
             esac
             ;;
@@ -556,10 +555,12 @@ ui_text() {
                 mtu_invalid) echo "Invalid MTU" ;;
                 bbr_already) echo "BBR is already enabled on this system." ;;
                 bbr_unavailable) echo "Kernel does not support BBR — skipping." ;;
-                bbr_yes_default) echo "BBR is not active; enabling by default (--yes)." ;;
-                bbr_intro) echo "BBR (TCP congestion control) is not enabled. Recommended for faster/stabler VPN TCP." ;;
-                bbr_prompt) echo "Enable BBR now? [Y/n]: " ;;
-                bbr_enabled) echo "BBR will be enabled." ;;
+                bbr_yes_default) echo "BBR: enabling by default (--yes)." ;;
+                bbr_status_on) echo "BBR status: ENABLED." ;;
+                bbr_status_off) echo "BBR status: NOT ENABLED." ;;
+                bbr_intro) echo "BBR (TCP congestion control) improves VPN/TCP speed and stability." ;;
+                bbr_prompt) echo "Enable / keep BBR? [Y/n]: " ;;
+                bbr_enabled) echo "BBR will be used." ;;
                 bbr_disabled) echo "BBR will stay disabled by your choice." ;;
                 *) echo "" ;;
             esac
@@ -3016,8 +3017,9 @@ initialize_setup() {
         fi
         validate_subnet "$AWG_TUNNEL_SUBNET"
         if [[ "$DISABLE_IPV6" == "default" ]]; then configure_ipv6; fi
-        if [[ "$ALLOWED_IPS_MODE" == "default" ]]; then configure_routing_mode; fi
+        # BBR right after IPv6 so it is visible like other system toggles.
         configure_bbr
+        if [[ "$ALLOWED_IPS_MODE" == "default" ]]; then configure_routing_mode; fi
         configure_client_dns
         configure_mtu
     else
@@ -3027,8 +3029,8 @@ initialize_setup() {
                 die "Invalid ALLOWED_IPS in config: '$ALLOWED_IPS'. Delete $CONFIG_FILE and re-run the installer."
             fi
         fi
-        # Reconfigure / resume: still offer BBR if the kernel is not using it yet.
-        if [[ -n "${CLI_BBR:-}" ]] || ! bbr_is_enabled; then
+        # Always re-ask on reconfigure / CLI; also ask if BBR is not active yet.
+        if [[ "${MENU_ACTION:-}" == "reconfigure" || -n "${CLI_BBR:-}" ]] || ! bbr_is_enabled; then
             configure_bbr
         fi
         # Allow CLI overrides for DNS/MTU even on resume/reconfigure.
