@@ -2370,39 +2370,12 @@ step_uninstall() {
     rm -rf /var/lib/amneziawg 2>/dev/null || true
     systemctl daemon-reload 2>/dev/null || true
     if [[ "$saved_no_tweaks" -eq 0 ]]; then
-        log "Cleaning up AmneziaWG UFW rules..."
-        if command -v ufw &>/dev/null; then
-            local port_to_del
-            if [[ -f "$CONFIG_FILE" ]]; then
-                # shellcheck source=/dev/null
-                port_to_del=$(safe_read_config_key "AWG_PORT" "$CONFIG_FILE")
-            fi
-            port_to_del=${port_to_del:-39743}
-            # Removing our rules is ALWAYS performed (idempotent)
-            ufw delete allow "${port_to_del}/udp" 2>/dev/null
-            # To delete a route rule we need an exact match with how it was created:
-            # "ufw route allow in on awg0 out on <nic>". Without "out on", UFW will
-            # not find the rule and it stays in ufw status. Discussion #41.
-            local _nic
-            _nic=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1); exit}')
-            if [[ -n "$_nic" ]]; then
-                ufw route delete allow in on awg0 out on "$_nic" 2>/dev/null
-            fi
-            # Fallback: try deleting without out on (for compatibility with older rules)
-            ufw route delete allow in on awg0 2>/dev/null
-
-            # ufw disable runs ONLY if UFW was enabled by our installer.
-            # Protects against destructive uninstall on a VPS where UFW was used
-            # for SSH/web hardening BEFORE our script was installed (audit).
-            # Backwards compat: older installs without the marker keep UFW active.
-            if [[ -f "$AWG_DIR/.ufw_enabled_by_installer" ]]; then
-                log "Disabling UFW (was enabled by our installer)..."
-                ufw --force disable 2>/dev/null
-                rm -f "$AWG_DIR/.ufw_enabled_by_installer"
-            else
-                log "Leaving UFW active (was active before installation, or older installer version)."
-            fi
+        # Per local policy: uninstall must not modify UFW state/rules.
+        # We only remove our own marker file if present.
+        if [[ -f "$AWG_DIR/.ufw_enabled_by_installer" ]]; then
+            rm -f "$AWG_DIR/.ufw_enabled_by_installer"
         fi
+        log "Skipping UFW cleanup by policy (no UFW changes during uninstall)."
         log "Removing Fail2Ban bans..."
         if command -v fail2ban-client &>/dev/null; then
             fail2ban-client unban --all 2>/dev/null || true
@@ -2413,7 +2386,7 @@ step_uninstall() {
     fi
     log "Removing packages..."
     if [[ "$saved_no_tweaks" -eq 0 ]]; then
-        local _purge_pkgs=(amneziawg-dkms amneziawg-tools qrencode)
+        local _purge_pkgs=(amneziawg-dkms amneziawg-tools wireguard-tools qrencode)
         # Purge fail2ban only if we installed it ourselves (marker from
         # setup_fail2ban) - otherwise SSH protection the user had before the
         # installer must not disappear together with the VPN. Our jail file
@@ -2426,7 +2399,7 @@ step_uninstall() {
         fi
         DEBIAN_FRONTEND=noninteractive apt-get purge -y "${_purge_pkgs[@]}" 2>/dev/null || log_warn "Purge error."
     else
-        DEBIAN_FRONTEND=noninteractive apt-get purge -y amneziawg-dkms amneziawg-tools qrencode 2>/dev/null || log_warn "Purge error."
+        DEBIAN_FRONTEND=noninteractive apt-get purge -y amneziawg-dkms amneziawg-tools wireguard-tools qrencode 2>/dev/null || log_warn "Purge error."
     fi
     DEBIAN_FRONTEND=noninteractive apt-get autoremove -y 2>/dev/null || log_warn "Autoremove error."
     log "Removing PPA and files..."
