@@ -162,6 +162,41 @@ random_udp_port() {
     echo $(( (RANDOM % 16384) + 49152 ))
 }
 
+bbr_is_enabled() {
+    local cc
+    cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)"
+    [[ "$cc" == "bbr" ]]
+}
+
+configure_bbr() {
+    case "${ENABLE_BBR:-1}" in
+        0|1) : ;;
+        *) ENABLE_BBR=1 ;;
+    esac
+
+    if bbr_is_enabled; then
+        ENABLE_BBR=1
+        log "BBR is already enabled."
+        return 0
+    fi
+
+    if [[ "$AUTO_YES" -eq 1 ]]; then
+        ENABLE_BBR=1
+        log "BBR is not active; enabling by default (--yes)."
+        return 0
+    fi
+
+    local bbr_ans="Y"
+    read -rp "BBR is not enabled. Enable BBR now? [Y/n]: " bbr_ans < /dev/tty
+    if [[ "$bbr_ans" =~ ^[[:space:]]*[Nn][Oo]?[[:space:]]*$ ]]; then
+        ENABLE_BBR=0
+        log_warn "BBR will stay disabled by your choice."
+    else
+        ENABLE_BBR=1
+        log "BBR will be enabled."
+    fi
+}
+
 ui_text() {
     local key="$1"
     case "${UI_LANG:-en}" in
@@ -556,6 +591,7 @@ AWG_ENDPOINT=${AWG_ENDPOINT}
 AWG_SERVER_NAME=${AWG_SERVER_NAME}
 CLIENT_ISOLATION=${CLIENT_ISOLATION:-1}
 NO_TWEAKS=${NO_TWEAKS}
+ENABLE_BBR=${ENABLE_BBR:-1}
 EOF
     chmod 600 "$PARAMS_FILE" 2>/dev/null || true
 }
@@ -577,6 +613,7 @@ load_compat_params() {
             AWG_SERVER_NAME) AWG_SERVER_NAME="$value" ;;
             CLIENT_ISOLATION) [[ "$value" =~ ^(0|1)$ ]] && CLIENT_ISOLATION="$value" ;;
             NO_TWEAKS) [[ "$value" =~ ^(0|1)$ ]] && NO_TWEAKS="$value" ;;
+            ENABLE_BBR) [[ "$value" =~ ^(0|1)$ ]] && ENABLE_BBR="$value" ;;
         esac
     done < "$PARAMS_FILE"
     log "Compatibility params loaded from $PARAMS_FILE"
@@ -1325,16 +1362,16 @@ configure_routing_mode() {
         fi
         log "Routing mode from CLI: $ALLOWED_IPS_MODE"
     elif [[ "$AUTO_YES" -eq 1 ]]; then
-        ALLOWED_IPS_MODE=2
-        log "Routing mode: Amnezia+DNS (--yes, default)."
+        ALLOWED_IPS_MODE=1
+        log "Routing mode: All traffic/full tunnel (--yes, default)."
     else
         echo ""
         log "Select routing mode (client AllowedIPs):"
-        echo "  1) All traffic (0.0.0.0/0) - Max privacy, may block LAN"
-        echo "  2) Amnezia List+DNS (default) - Recommended for bypassing restrictions"
+        echo "  1) All traffic (0.0.0.0/0) - Default, full tunnel"
+        echo "  2) Amnezia List+DNS - Bypass mode"
         echo "  3) Only specified networks (Split Tunneling)"
-        read -rp "Your choice [2]: " r_mode < /dev/tty
-        ALLOWED_IPS_MODE=${r_mode:-2}
+        read -rp "Your choice [1]: " r_mode < /dev/tty
+        ALLOWED_IPS_MODE=${r_mode:-1}
     fi
     case "$ALLOWED_IPS_MODE" in
         1) ALLOWED_IPS="0.0.0.0/0"
@@ -1881,8 +1918,12 @@ $(if [[ "${DISABLE_IPV6:-1}" -ne 1 ]]; then
 fi)
 
 # --- BBR Congestion Control ---
-net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
+$(if [[ "${ENABLE_BBR:-1}" -eq 1 ]]; then
+    echo "net.core.default_qdisc = fq"
+    echo "net.ipv4.tcp_congestion_control = bbr"
+else
+    echo "# BBR disabled by user choice"
+fi)
 
 # --- Network Buffers (adaptive) ---
 net.core.rmem_max = ${rmem_max}
@@ -2045,12 +2086,12 @@ setup_improved_firewall() {
             log_warn "NOTE: SSH on a non-standard port. If the port is detected wrong, you will lose server access."
             log_warn "Override if needed: --ssh-port=PORT"
         fi
-        local confirm_ufw="y"
+        local confirm_ufw="n"
         if [[ "$AUTO_YES" -eq 0 ]]; then
             sleep 5
             read -rp "Enable UFW? [y/N]: " confirm_ufw < /dev/tty
         else
-            log "Auto-enabling UFW (--yes)."
+            log "UFW remains disabled by default (--yes). Enable later if needed: sudo ufw enable"
         fi
         if ! [[ "$confirm_ufw" =~ ^[[:space:]]*[Yy]([Ee][Ss])?[[:space:]]*$ ]]; then
             log_warn "UFW configured but not activated by your choice."
@@ -2508,6 +2549,7 @@ initialize_setup() {
     ALLOWED_IPS_MODE="default"
     ALLOWED_IPS=""
     AWG_ENDPOINT=""
+    ENABLE_BBR=1
     CLIENT_ISOLATION=""
     # Hard reset (not ${VAR:-}): the internal ownership marker must not be
     # inherited from the environment - an externally exported variable would
@@ -2529,6 +2571,11 @@ initialize_setup() {
         ALLOWED_IPS_MODE=${ALLOWED_IPS_MODE:-"default"}
         ALLOWED_IPS=${ALLOWED_IPS:-""}
         AWG_ENDPOINT=${AWG_ENDPOINT:-""}
+        ENABLE_BBR=${ENABLE_BBR:-1}
+        case "${ENABLE_BBR}" in
+            0|1) : ;;
+            *) ENABLE_BBR=1 ;;
+        esac
         # CLIENT_ISOLATION from the config: strictly 0|1 (the whitelist parser
         # does not check values, and configs get edited by hand). Otherwise the
         # arithmetic context [[ "on" -eq 1 ]] dereferences the string as an
@@ -2656,6 +2703,7 @@ initialize_setup() {
         validate_subnet "$AWG_TUNNEL_SUBNET"
         if [[ "$DISABLE_IPV6" == "default" ]]; then configure_ipv6; fi
         if [[ "$ALLOWED_IPS_MODE" == "default" ]]; then configure_routing_mode; fi
+        configure_bbr
     else
         log "Using settings from $CONFIG_FILE."
         if [[ "$ALLOWED_IPS_MODE" == "3" ]] && [[ -n "$ALLOWED_IPS" ]]; then
@@ -2673,7 +2721,7 @@ initialize_setup() {
     # Default values
     if [[ "$DISABLE_IPV6" == "default" ]]; then DISABLE_IPV6=1; fi
     configure_ipv6_tunnel
-    if [[ "$ALLOWED_IPS_MODE" == "default" ]]; then ALLOWED_IPS_MODE=2; fi
+    if [[ "$ALLOWED_IPS_MODE" == "default" ]]; then ALLOWED_IPS_MODE=1; fi
     if [[ -z "$ALLOWED_IPS" ]]; then configure_routing_mode; fi
 
     # Client isolation (issue #178): choice + AllowedIPs alignment. Called
@@ -2780,6 +2828,7 @@ export AWG_I5='${AWG_I5:-}'
 export AWG_PRESET='${AWG_PRESET:-default}'
 export NO_TWEAKS=${NO_TWEAKS}
 export NO_CPS=${NO_CPS}
+export ENABLE_BBR=${ENABLE_BBR:-1}
 export AWG_APPLY_MODE='${AWG_APPLY_MODE:-syncconf}'
 export ALLOW_IPV6_TUNNEL=${ALLOW_IPV6_TUNNEL:-0}
 export IPV6_SUBNET='${IPV6_SUBNET}'
