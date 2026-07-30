@@ -157,6 +157,11 @@ log_error() { log_msg "ERROR" "$1"; }
 log_debug() { if [[ "$VERBOSE" -eq 1 ]]; then log_msg "DEBUG" "$1"; fi; }
 die()       { log_error "CRITICAL ERROR: $1"; log_error "Installation aborted. Log: $LOG_FILE"; exit 1; }
 
+random_udp_port() {
+    # Ephemeral/private port range (49152-65535)
+    echo $(( (RANDOM % 16384) + 49152 ))
+}
+
 ui_text() {
     local key="$1"
     case "${UI_LANG:-en}" in
@@ -2486,6 +2491,12 @@ initialize_setup() {
     local default_port=39743
     local default_subnet="10.66.66.1/24"
     local config_exists=0
+
+    # First install: pick a random default port unless user set --port.
+    # Re-runs keep the saved value from CONFIG_FILE.
+    if [[ ! -f "$CONFIG_FILE" && -z "${CLI_PORT:-}" ]]; then
+        default_port="$(random_udp_port)"
+    fi
 
     # Variable initialization
     AWG_PORT=$default_port
