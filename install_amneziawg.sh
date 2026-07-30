@@ -2319,7 +2319,10 @@ step_uninstall() {
     local confirm="" backup="Y"
     if [[ "$AUTO_YES" -eq 0 ]]; then
         read -rp "Are you sure? (type 'yes'): " confirm < /dev/tty
-        if [[ "$confirm" != "yes" ]]; then log "Uninstall cancelled."; exit 1; fi
+        if [[ ! "$confirm" =~ ^[[:space:]]*[Yy][Ee][Ss][[:space:]]*$ ]]; then
+            log "Uninstall cancelled."
+            exit 1
+        fi
         read -rp "Create backup before removal? [Y/n]: " backup < /dev/tty
     else
         log "Auto-confirming uninstall (--yes)."
