@@ -206,27 +206,89 @@ validate_ipv4_addr() {
     [[ "$ip" =~ ^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$ ]]
 }
 
-# Probe IPv4 path MTU toward a public host via DF ping binary search.
+# Normalize SSH_CLIENT / SSH_CONNECTION (or a raw IPv4) → print IPv4 or fail.
+_ssh_peer_ipv4() {
+    local cand="$1"
+    cand="${cand#SSH_CLIENT=}"
+    cand="${cand#SSH_CONNECTION=}"
+    cand="${cand%%[[:space:]]*}"
+    if validate_ipv4_addr "$cand" && [[ "$cand" != "127.0.0.1" ]]; then
+        printf '%s\n' "$cand"
+        return 0
+    fi
+    return 1
+}
+
+# Best-effort IPv4 of the operator currently controlling this VM (SSH peer).
+# Under sudo, SSH_* env is often stripped — walk /proc parents, then who/ss.
+# Prints a single IPv4 address or nothing.
+detect_controlling_client_ip() {
+    local ip="" raw="" pid=$$ envf="" line="" peer=""
+
+    if [[ -n "${SSH_CLIENT:-}" ]] && _ssh_peer_ipv4 "$SSH_CLIENT"; then return 0; fi
+    if [[ -n "${SSH_CONNECTION:-}" ]] && _ssh_peer_ipv4 "$SSH_CONNECTION"; then return 0; fi
+
+    while [[ "$pid" =~ ^[0-9]+$ ]] && (( pid > 1 )); do
+        envf="/proc/${pid}/environ"
+        if [[ -r "$envf" ]]; then
+            while IFS= read -r line; do
+                case "$line" in
+                    SSH_CLIENT=*|SSH_CONNECTION=*)
+                        if _ssh_peer_ipv4 "$line"; then return 0; fi
+                        ;;
+                esac
+            done < <(tr '\0' '\n' < "$envf" 2>/dev/null || true)
+        fi
+        pid="$(awk '/^PPid:/{print $2; exit}' "/proc/${pid}/status" 2>/dev/null || echo 1)"
+    done
+
+    raw="$(who am i 2>/dev/null || who -m 2>/dev/null || true)"
+    if [[ "$raw" =~ \(([0-9]{1,3}(\.[0-9]{1,3}){3})\) ]]; then
+        if _ssh_peer_ipv4 "${BASH_REMATCH[1]}"; then return 0; fi
+    fi
+
+    if command -v ss >/dev/null 2>&1; then
+        while IFS= read -r peer; do
+            ip="${peer%:*}"
+            ip="${ip#\[}"; ip="${ip%\]}"
+            if _ssh_peer_ipv4 "$ip"; then return 0; fi
+        done < <(ss -tnH state established 2>/dev/null | awk '
+            $3 ~ /:(22|2222|2200|22022)$/ { print $4 }' || true)
+    fi
+    return 1
+}
+
+# Probe IPv4 path MTU toward a host via DF ping binary search.
 # Prints integer path MTU on success, otherwise nothing.
 probe_path_mtu() {
-    local target="${1:-1.1.1.1}"
+    local target="${1:-}"
     local lo=576 hi=1500 mid payload ok=0
-    local iface_mtu
+    local iface_mtu link_mtu attempt success
+    [[ -n "$target" ]] || return 1
+    validate_ipv4_addr "$target" || return 1
+    command -v ping >/dev/null 2>&1 || return 1
+
     iface_mtu=$(ip -o -4 route get "$target" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
     if [[ -n "$iface_mtu" ]]; then
-        local link_mtu
         link_mtu=$(cat "/sys/class/net/${iface_mtu}/mtu" 2>/dev/null || true)
         if [[ "$link_mtu" =~ ^[0-9]+$ ]] && (( link_mtu >= 576 && link_mtu <= 9000 )); then
             hi="$link_mtu"
         fi
     fi
-    command -v ping >/dev/null 2>&1 || return 1
-    # payload size = MTU - 28 (IPv4 20 + ICMP 8)
+
+    # payload size = MTU - 28 (IPv4 20 + ICMP 8). Retry twice to reduce false negatives.
     while (( lo <= hi )); do
         mid=$(( (lo + hi) / 2 ))
         payload=$(( mid - 28 ))
         (( payload < 0 )) && payload=0
-        if ping -c 1 -W 1 -M do -s "$payload" "$target" >/dev/null 2>&1; then
+        success=0
+        for attempt in 1 2; do
+            if ping -c 1 -W 2 -M do -s "$payload" "$target" >/dev/null 2>&1; then
+                success=1
+                break
+            fi
+        done
+        if (( success == 1 )); then
             ok="$mid"
             lo=$(( mid + 1 ))
         else
@@ -292,7 +354,7 @@ configure_client_dns() {
 }
 
 configure_mtu() {
-    local suggested=1420 input_mtu path_mtu
+    local suggested=1420 input_mtu path_mtu client_ip probe_target probe_label
     if [[ -n "${CLI_MTU:-}" ]]; then
         if ! [[ "$CLI_MTU" =~ ^[0-9]+$ ]] || (( CLI_MTU < 576 || CLI_MTU > 9100 )); then
             die "Invalid --mtu=$CLI_MTU (allowed: 576-9100)"
@@ -307,13 +369,37 @@ configure_mtu() {
             return 0
         fi
     fi
-    # Probe once in current shell (not via $()) so logging stays clean.
-    path_mtu="$(probe_path_mtu 1.1.1.1 2>/dev/null || true)"
+
+    # Prefer path MTU toward the operator's public IP (SSH peer) — that is the
+    # real client↔VPS path the tunnel will use. Fall back to 1.1.1.1 if needed.
+    client_ip="$(detect_controlling_client_ip 2>/dev/null || true)"
+    path_mtu=""
+    if [[ -n "$client_ip" ]]; then
+        log "Detected controlling client IP: ${client_ip} — probing path MTU toward it..."
+        path_mtu="$(probe_path_mtu "$client_ip" 2>/dev/null || true)"
+        if [[ "$path_mtu" =~ ^[0-9]+$ ]]; then
+            probe_target="$client_ip"
+            probe_label="controlling client"
+        else
+            log_warn "Path MTU probe to client ${client_ip} failed (ICMP filtered?); trying 1.1.1.1..."
+        fi
+    else
+        log_warn "Could not detect controlling client IP (no SSH peer); probing 1.1.1.1..."
+    fi
+    if ! [[ "$path_mtu" =~ ^[0-9]+$ ]]; then
+        path_mtu="$(probe_path_mtu 1.1.1.1 2>/dev/null || true)"
+        if [[ "$path_mtu" =~ ^[0-9]+$ ]]; then
+            probe_target="1.1.1.1"
+            probe_label="fallback"
+        fi
+    fi
+
     if [[ "$path_mtu" =~ ^[0-9]+$ ]]; then
-        suggested=$(( path_mtu - 80 ))
+        # WireGuard/AmneziaWG overhead ≈ 80 bytes (IPv6-safe). Extra 20 for AWG junk margin.
+        suggested=$(( path_mtu - 100 ))
         (( suggested < 1280 )) && suggested=1280
         (( suggested > 1420 )) && suggested=1420
-        log "Path MTU probe to 1.1.1.1: ${path_mtu} → suggested tunnel MTU ${suggested}"
+        log "Path MTU to ${probe_target} (${probe_label}): ${path_mtu} → suggested tunnel MTU ${suggested}"
     else
         suggested=1420
         log_warn "Path MTU probe failed; using practical default tunnel MTU ${suggested}"
@@ -381,7 +467,7 @@ ui_text() {
                 dns2_prompt) echo "DNS resolver thứ hai cho client (tuỳ chọn)" ;;
                 dns_invalid) echo "DNS IPv4 không hợp lệ" ;;
                 mtu_prompt) echo "MTU tunnel cho client" ;;
-                mtu_note) echo "Ghi chú MTU: 1280 là mức tối thiểu IPv6 (an toàn nhưng thường chậm). VPS Ethernet thường tốt hơn quanh 1420." ;;
+                mtu_note) echo "Ghi chú MTU: script đo path MTU tới IP client đang SSH vào VM (fallback 1.1.1.1). 1280 = an toàn IPv6; VPS Ethernet thường ~1420." ;;
                 mtu_invalid) echo "MTU không hợp lệ" ;;
                 *) echo "" ;;
             esac
@@ -427,7 +513,7 @@ ui_text() {
                 dns2_prompt) echo "Second DNS resolver for clients (optional)" ;;
                 dns_invalid) echo "Invalid IPv4 DNS" ;;
                 mtu_prompt) echo "Tunnel MTU for clients" ;;
-                mtu_note) echo "MTU note: 1280 is IPv6-minimum (very safe, often slow). Typical Ethernet VPS works better around 1420." ;;
+                mtu_note) echo "MTU note: probes path MTU toward your SSH client IP (fallback 1.1.1.1). 1280 = IPv6-safe floor; typical Ethernet VPS ~1420." ;;
                 mtu_invalid) echo "Invalid MTU" ;;
                 *) echo "" ;;
             esac
@@ -626,7 +712,7 @@ Tùy chọn:
   --jmin=N              Đặt Jmin thủ công
   --jmax=N              Đặt Jmax thủ công (>= Jmin)
   --dns=IP[,IP2]        DNS cho client (mặc định 1.1.1.1,1.0.0.1)
-  --mtu=NUMBER          MTU tunnel (576-9100; mặc định probe tự động)
+  --mtu=NUMBER          MTU tunnel (576-9100; mặc định probe tới IP SSH client)
   --no-cps              Tắt CPS (I1)
 
 Ví dụ:
@@ -685,7 +771,7 @@ Options:
   --jmin=N             Set Jmin manually (0-1280, overrides preset)
   --jmax=N             Set Jmax manually (0-1280, overrides preset, must be >= Jmin)
   --dns=IP[,IP2]       Client DNS resolvers (default 1.1.1.1,1.0.0.1)
-  --mtu=NUMBER         Tunnel MTU 576-9100 (default: auto-probe suggestion)
+  --mtu=NUMBER         Tunnel MTU 576-9100 (default: probe toward SSH client IP)
   --no-cps              Disable CPS (the I1 parameter) - needed if the desktop
                         AmneziaVPN on macOS hangs on connect (issue #159)
 
