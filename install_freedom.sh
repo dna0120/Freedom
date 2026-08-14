@@ -22,6 +22,7 @@ SCRIPT_VERSION="5.21.2"
 AWG_DIR="/root/awg"
 CONFIG_FILE="$AWG_DIR/awgsetup_cfg.init"
 STATE_FILE="$AWG_DIR/setup_state"
+STACK_CHOICE_FILE="$AWG_DIR/.stack_choice"
 LOG_FILE="$AWG_DIR/install_amneziawg.log"
 KEYS_DIR="$AWG_DIR/keys"
 SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"
@@ -69,6 +70,9 @@ INSTALL_XRAY_ONLY=0
 UNINSTALL_XRAY=0
 INSTALL_HY2_ONLY=0
 UNINSTALL_HY2=0
+INSTALL_AWG=1
+POST_INSTALL_XRAY=0
+POST_INSTALL_HY2=0
 _APT_UPDATED=0
 CLI_LANG=""
 UI_LANG="${UI_LANG:-}"
@@ -497,6 +501,14 @@ ui_text() {
                 language_opt_en) echo "1) English" ;;
                 language_opt_vi) echo "2) Tiếng Việt" ;;
                 language_select) echo "Nhập lựa chọn [1-2, mặc định 1]: " ;;
+                stack_title) echo "Máy này chưa cài gì. Bạn muốn cài giao thức nào?" ;;
+                stack_opt_awg) echo "1) AmneziaWG (WireGuard nguỵ trang, UDP)" ;;
+                stack_opt_xray) echo "2) Xray — VLESS+REALITY (Vision/XHTTP/gRPC, tuỳ chọn CDN)" ;;
+                stack_opt_hy2) echo "3) Hysteria2 (QUIC/UDP + OBFS)" ;;
+                stack_opt_awg_xray) echo "4) AmneziaWG + Xray" ;;
+                stack_opt_all) echo "5) Cài cả ba (AmneziaWG + Xray + Hysteria2)" ;;
+                stack_select) echo "Chọn [1-5, mặc định 1]: " ;;
+                stack_chosen) echo "Sẽ cài: %s" ;;
                 menu_welcome) echo "Chào mừng đến với AmneziaWG-install!" ;;
                 menu_repo) echo "Mã nguồn: ${PROJECT_REPO_URL}" ;;
                 menu_installed) echo "Phát hiện AmneziaWG / Xray đã được cài." ;;
@@ -580,6 +592,14 @@ ui_text() {
                 language_opt_en) echo "1) English" ;;
                 language_opt_vi) echo "2) Tieng Viet" ;;
                 language_select) echo "Select [1-2, default 1]: " ;;
+                stack_title) echo "Nothing is installed yet. Which stack do you want?" ;;
+                stack_opt_awg) echo "1) AmneziaWG (obfuscated WireGuard, UDP)" ;;
+                stack_opt_xray) echo "2) Xray — VLESS+REALITY (Vision/XHTTP/gRPC, optional CDN)" ;;
+                stack_opt_hy2) echo "3) Hysteria2 (QUIC/UDP + OBFS)" ;;
+                stack_opt_awg_xray) echo "4) AmneziaWG + Xray" ;;
+                stack_opt_all) echo "5) Install all three (AmneziaWG + Xray + Hysteria2)" ;;
+                stack_select) echo "Select [1-5, default 1]: " ;;
+                stack_chosen) echo "Will install: %s" ;;
                 menu_welcome) echo "Welcome to AmneziaWG-install!" ;;
                 menu_repo) echo "Repository: ${PROJECT_REPO_URL}" ;;
                 menu_installed) echo "It looks like AmneziaWG / Xray is already installed." ;;
@@ -5299,6 +5319,71 @@ should_open_manage_menu() {
     (( awg_ok == 1 || xray_ok == 1 || hy2_ok == 1 ))
 }
 
+# First run on a clean server: ask which stack(s) to install instead of
+# silently defaulting to AmneziaWG. Skipped for non-interactive runs, for
+# --force/--yes, and when an interrupted install is being resumed (the
+# state file pins the flow to AmneziaWG).
+should_prompt_stack() {
+    [[ "$AUTO_YES" -eq 1 ]] && return 1
+    [[ "$FORCE_REINSTALL" -eq 1 ]] && return 1
+    [[ "${MENU_ACTION:-}" == "reconfigure" ]] && return 1
+    [[ -f "$SERVER_CONF_FILE" ]] && return 1
+    [[ -f "$STATE_FILE" ]] && return 1
+    [[ -t 0 ]] || return 1
+    return 0
+}
+
+select_install_stack() {
+    local pick="" chosen=""
+    echo ""
+    echo "$(ui_text stack_title)"
+    echo "  $(ui_text stack_opt_awg)"
+    echo "  $(ui_text stack_opt_xray)"
+    echo "  $(ui_text stack_opt_hy2)"
+    echo "  $(ui_text stack_opt_awg_xray)"
+    echo "  $(ui_text stack_opt_all)"
+    until [[ "$pick" =~ ^[1-5]$ ]]; do
+        read -rp "$(ui_text stack_select)" pick < /dev/tty
+        pick="${pick:-1}"
+    done
+    case "$pick" in
+        1) INSTALL_AWG=1; chosen="AmneziaWG" ;;
+        2) INSTALL_AWG=0; POST_INSTALL_XRAY=1; chosen="Xray" ;;
+        3) INSTALL_AWG=0; POST_INSTALL_HY2=1; chosen="Hysteria2" ;;
+        4) INSTALL_AWG=1; POST_INSTALL_XRAY=1; chosen="AmneziaWG + Xray" ;;
+        5) INSTALL_AWG=1; POST_INSTALL_XRAY=1; POST_INSTALL_HY2=1
+           chosen="AmneziaWG + Xray + Hysteria2" ;;
+    esac
+    printf -v _stack_chosen "$(ui_text stack_chosen)" "$chosen"
+    log "$_stack_chosen"
+    # Persist the choice: an AmneziaWG install can pause for a kernel reboot,
+    # and the resumed run must still install the extra stacks that were picked.
+    if mkdir -p "$AWG_DIR" 2>/dev/null; then
+        printf 'POST_INSTALL_XRAY=%s\nPOST_INSTALL_HY2=%s\n' \
+            "$POST_INSTALL_XRAY" "$POST_INSTALL_HY2" > "$STACK_CHOICE_FILE" 2>/dev/null || true
+        chmod 600 "$STACK_CHOICE_FILE" 2>/dev/null || true
+    fi
+}
+
+load_stack_choice() {
+    [[ -f "$STACK_CHOICE_FILE" ]] || return 0
+    local key val
+    while IFS='=' read -r key val; do
+        [[ "$val" =~ ^[01]$ ]] || continue
+        case "$key" in
+            POST_INSTALL_XRAY) POST_INSTALL_XRAY="$val" ;;
+            POST_INSTALL_HY2)  POST_INSTALL_HY2="$val" ;;
+        esac
+    done < "$STACK_CHOICE_FILE"
+}
+
+run_selected_extra_stacks() {
+    (( POST_INSTALL_XRAY == 1 )) && step_install_xray
+    (( POST_INSTALL_HY2 == 1 )) && step_install_hy2
+    rm -f "$STACK_CHOICE_FILE" 2>/dev/null || true
+    return 0
+}
+
 # ==============================================================================
 # Main execution loop
 # ==============================================================================
@@ -5334,6 +5419,17 @@ if should_open_manage_menu; then
     if [[ "${MENU_ACTION:-exit}" != "reconfigure" ]]; then
         exit 0
     fi
+elif should_prompt_stack; then
+    if [ "$(id -u)" -ne 0 ]; then die "Run the script as root (sudo bash $0)."; fi
+    select_install_stack
+else
+    load_stack_choice
+fi
+
+# Stack choice excluded AmneziaWG: run only the selected extra stacks.
+if [[ "$INSTALL_AWG" -eq 0 ]]; then
+    run_selected_extra_stacks
+    exit 0
 fi
 
 initialize_setup
@@ -5353,4 +5449,5 @@ while (( current_step < 99 )); do
 done
 
 if (( current_step == 99 )); then step99_finish; fi
+run_selected_extra_stacks
 exit 0

@@ -18,6 +18,18 @@ curl -fsSL https://raw.githubusercontent.com/dna0120/Freedom/main/install_freedo
 
 Script tự tải các file phụ nên chỉ cần đúng một lệnh trên.
 
+Lần chạy đầu trên máy sạch, script hỏi ngay muốn cài gì:
+
+```
+1) AmneziaWG
+2) Xray — VLESS+REALITY (Vision/XHTTP/gRPC, tuỳ chọn CDN)
+3) Hysteria2
+4) AmneziaWG + Xray
+5) Cả ba
+```
+
+Chọn 2 hoặc 3 thì bỏ qua hoàn toàn phần cài AmneziaWG. Lựa chọn được ghi nhớ nên nếu AmneziaWG cần reboot giữa chừng, chạy lại lệnh trên sẽ cài tiếp đúng các stack đã chọn. Dùng `--yes` hoặc `--force` thì không hỏi và mặc định AmneziaWG như cũ.
+
 ## Dùng lại sau khi cài
 
 Chạy lại đúng lệnh trên (hoặc `sudo bash install_freedom.sh`) — mở menu quản lý.
