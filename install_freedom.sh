@@ -5800,7 +5800,7 @@ update_repair_xray_dest() {
 # Self-signed certificates issued by older releases have no SAN and the profiles
 # carry no pin, which iOS clients reject. Reissue both.
 update_repair_hy2_cert() {
-    local cert="${HY2_TLS_CERT:-}"
+    local cert="${HY2_TLS_CERT:-}" reissued=0
     [[ -n "$cert" && -f "$cert" ]] || return 0
     [[ "$cert" == "$HY2_CERT_DIR"/* ]] || return 0
     if ! openssl x509 -in "$cert" -noout -text 2>/dev/null | grep -q 'Subject Alternative Name'; then
@@ -5809,9 +5809,12 @@ update_repair_hy2_cert() {
             || { log_warn "Could not regenerate the certificate."; return 0; }
         hy2_save_config || log_warn "Could not save the Hysteria2 config."
         hy2_apply_config || log_warn "Applying the new certificate failed."
+        reissued=1
     fi
-    hy2_refresh_client_files
-    log "Hysteria2 profiles reissued with a certificate pin; re-import them on your devices."
+    hy2_refresh_client_files >/dev/null
+    if [[ "$reissued" -eq 1 ]]; then
+        log "Hysteria2 profiles reissued with a certificate pin; re-import them on your devices."
+    fi
 }
 
 step_apply_updates() {
