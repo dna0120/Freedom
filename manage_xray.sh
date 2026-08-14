@@ -133,8 +133,13 @@ case "$COMMAND" in
         mkdir -p "$XRAY_CLIENTS_DIR"
         exec 9>"$XRAY_DIR/.xray_config.lock"
         flock -w 60 9 || die "Could not lock $XRAY_DIR/.xray_config.lock"
-        link="$(xray_add_client "$CLIENT_NAME" "$CLIENT_PROTO" | grep '^vless://' | tail -n1)" \
+        # Do not run xray_add_client on the left side of a pipeline: that puts
+        # config rendering/restart in a subshell and can leave the persisted
+        # server config without the newly-created client. The URL is already
+        # written atomically to the client's .url file.
+        xray_add_client "$CLIENT_NAME" "$CLIENT_PROTO" >/dev/null \
             || die "Failed to add client '$CLIENT_NAME'"
+        link="$(tr -d '\r\n' < "$XRAY_CLIENTS_DIR/${CLIENT_NAME}.url" 2>/dev/null)"
         [[ -n "$link" ]] || die "Failed to add client '$CLIENT_NAME'"
         flock -u 9
         echo ""

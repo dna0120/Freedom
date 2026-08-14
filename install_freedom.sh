@@ -61,7 +61,7 @@ HY2_MANAGE_SCRIPT_PATH="$HY2_DIR/manage_hysteria.sh"
 COMMON_SCRIPT_SHA256="ca3bba0f989ab01775ad91803fb59089cb27039102b594b337bf4299d3f640b4"
 MANAGE_SCRIPT_SHA256="7d6c0a7f0a0983952e4b6a055f0553385d402cc7d017ffd91e1a4707485044d0"
 XRAY_COMMON_SCRIPT_SHA256="c4924064e031b43f66c0479299c4f56f3407a73528d3a426ae97b884a67c4570"
-XRAY_MANAGE_SCRIPT_SHA256="a1cd85abb8483d2432ab478f26eb1728f75a88390b437cdbd4fa09cecf978fd8"
+XRAY_MANAGE_SCRIPT_SHA256="ddc7a925b1906d17e68359a93f4b7a03a45b9485d85f4f0210b88369d9e0f0b8"
 HY2_COMMON_SCRIPT_SHA256="949d8f4e87320b9c90c8b8db33dd93761a987fa0a20fbf94196d05a1003fd536"
 HY2_MANAGE_SCRIPT_SHA256="9276c9694445a31f9341bfa3fcc06741028d7258ce26e8aa8e6be7865825561a"
 
@@ -518,6 +518,14 @@ ui_text() {
                 menu_welcome) echo "Chào mừng đến với AmneziaWG-install!" ;;
                 menu_repo) echo "Mã nguồn: ${PROJECT_REPO_URL}" ;;
                 menu_installed) echo "Phát hiện AmneziaWG / Xray đã được cài." ;;
+                menu_installed_stacks) echo "Giao thức đã cài:" ;;
+                menu_awg_section) echo "AmneziaWG" ;;
+                menu_xray_section) echo "Xray" ;;
+                menu_hy2_section) echo "Hysteria2" ;;
+                menu_install_awg) echo "Cài thêm AmneziaWG" ;;
+                menu_install_xray) echo "Cài thêm Xray" ;;
+                menu_install_hy2) echo "Cài thêm Hysteria2" ;;
+                menu_dynamic_select) echo "Chọn tùy chọn [1-%s]: " ;;
                 menu_status_running) echo "Trạng thái service: running" ;;
                 menu_status_stopped) echo "Trạng thái service: CHƯA chạy (dùng mục 4 để chẩn đoán)" ;;
                 menu_what) echo "Bạn muốn làm gì?" ;;
@@ -611,6 +619,14 @@ ui_text() {
                 menu_welcome) echo "Welcome to AmneziaWG-install!" ;;
                 menu_repo) echo "Repository: ${PROJECT_REPO_URL}" ;;
                 menu_installed) echo "It looks like AmneziaWG / Xray is already installed." ;;
+                menu_installed_stacks) echo "Installed stacks:" ;;
+                menu_awg_section) echo "AmneziaWG" ;;
+                menu_xray_section) echo "Xray" ;;
+                menu_hy2_section) echo "Hysteria2" ;;
+                menu_install_awg) echo "Install AmneziaWG" ;;
+                menu_install_xray) echo "Install Xray" ;;
+                menu_install_hy2) echo "Install Hysteria2" ;;
+                menu_dynamic_select) echo "Select an option [1-%s]: " ;;
                 menu_status_running) echo "Service status: running" ;;
                 menu_status_stopped) echo "Service status: NOT running (use option 4 for diagnostics)" ;;
                 menu_what) echo "What do you want to do?" ;;
@@ -5413,83 +5429,130 @@ menu_show_status() {
 }
 
 manageMenu() {
-    local MENU_OPTION=""
+    local MENU_OPTION="" action="" label="" prompt=""
+    local awg_installed=0 xray_installed=0 hy2_installed=0
+    local -a menu_labels=() menu_actions=()
     MENU_ACTION="exit"
+    [[ -f "$SERVER_CONF_FILE" ]] && awg_installed=1
+    xray_stack_ready && xray_installed=1
+    hy2_stack_ready && hy2_installed=1
+
+    # Existing translations contain their old fixed menu numbers. Strip that
+    # prefix because this menu is built dynamically from the installed stacks.
+    _dynamic_label() {
+        local text
+        text="$(ui_text "$1")"
+        printf '%s\n' "${text#*) }"
+    }
+    _add_menu_item() {
+        menu_labels+=("$1")
+        menu_actions+=("$2")
+    }
+
     echo ""
     echo "$(ui_text menu_welcome)"
     echo "$(ui_text menu_repo)"
     echo ""
-    echo "$(ui_text menu_installed)"
-    if systemctl is-active --quiet awg-quick@awg0 2>/dev/null; then
-        echo -e "$(ui_text menu_status_running)" | sed 's/running/\033[0;32mrunning\033[0m/'
+    echo "$(ui_text menu_installed_stacks)"
+    if [[ "$awg_installed" -eq 1 ]]; then
+        if systemctl is-active --quiet awg-quick@awg0 2>/dev/null; then
+            echo -e "  AmneziaWG: \033[0;32mrunning\033[0m"
+        else
+            echo -e "  AmneziaWG: \033[0;33mNOT running\033[0m"
+        fi
+    fi
+    if [[ "$xray_installed" -eq 1 ]]; then
+        if systemctl is-active --quiet xray 2>/dev/null; then
+            echo -e "  Xray: \033[0;32mrunning\033[0m"
+        else
+            echo -e "  Xray: \033[0;33mNOT running\033[0m"
+        fi
+    fi
+    if [[ "$hy2_installed" -eq 1 ]]; then
+        if systemctl is-active --quiet hysteria-server 2>/dev/null; then
+            echo -e "  Hysteria2: \033[0;32mrunning\033[0m"
+        else
+            echo -e "  Hysteria2: \033[0;33mNOT running\033[0m"
+        fi
+    fi
+
+    if [[ "$awg_installed" -eq 1 ]]; then
+        _add_menu_item "$(_dynamic_label menu_add) — AmneziaWG" awg_add
+        _add_menu_item "$(_dynamic_label menu_list) — AmneziaWG" awg_list
+        _add_menu_item "$(_dynamic_label menu_revoke) — AmneziaWG" awg_revoke
+        _add_menu_item "$(_dynamic_label menu_status) — AmneziaWG" awg_status
+        _add_menu_item "$(_dynamic_label menu_reconfigure)" awg_reconfigure
+        _add_menu_item "$(_dynamic_label menu_uninstall)" awg_uninstall
     else
-        echo -e "$(ui_text menu_status_stopped)" | sed 's/CHƯA chạy/\033[0;33mCHƯA chạy\033[0m/; s/NOT running/\033[0;33mNOT running\033[0m/'
+        _add_menu_item "$(ui_text menu_install_awg)" install_awg
     fi
-    if systemctl is-active --quiet xray 2>/dev/null; then
-        echo -e "Xray: \033[0;32mrunning\033[0m"
-    elif [[ -f "$XRAY_CONFIG_FILE" ]]; then
-        echo -e "Xray: \033[0;33mNOT running\033[0m"
+    if [[ "$xray_installed" -eq 1 ]]; then
+        _add_menu_item "$(_dynamic_label menu_xray_add)" xray_add
+        _add_menu_item "$(_dynamic_label menu_xray_list)" xray_list
+        _add_menu_item "$(_dynamic_label menu_xray_revoke)" xray_revoke
+        _add_menu_item "$(_dynamic_label menu_xray_status)" xray_status
+        _add_menu_item "$(_dynamic_label menu_xray_reconfigure)" xray_reconfigure
+        _add_menu_item "$(_dynamic_label menu_xray_uninstall)" xray_uninstall
+    else
+        _add_menu_item "$(ui_text menu_install_xray)" install_xray
     fi
-    if systemctl is-active --quiet hysteria-server 2>/dev/null; then
-        echo -e "Hysteria2: \033[0;32mrunning\033[0m"
-    elif [[ -f "$HY2_CONFIG_FILE" ]]; then
-        echo -e "Hysteria2: \033[0;33mNOT running\033[0m"
+    if [[ "$hy2_installed" -eq 1 ]]; then
+        _add_menu_item "$(_dynamic_label menu_hy2_add)" hy2_add
+        _add_menu_item "$(_dynamic_label menu_hy2_list)" hy2_list
+        _add_menu_item "$(_dynamic_label menu_hy2_revoke)" hy2_revoke
+        _add_menu_item "$(_dynamic_label menu_hy2_status)" hy2_status
+        _add_menu_item "$(_dynamic_label menu_hy2_reconfigure)" hy2_reconfigure
+        _add_menu_item "$(_dynamic_label menu_hy2_uninstall)" hy2_uninstall
+    else
+        _add_menu_item "$(ui_text menu_install_hy2)" install_hy2
     fi
+    _add_menu_item "$(_dynamic_label menu_updates)" updates
+    _add_menu_item "$(_dynamic_label menu_exit)" exit
+
     echo ""
     echo "$(ui_text menu_what)"
-    echo "   $(ui_text menu_add)"
-    echo "   $(ui_text menu_list)"
-    echo "   $(ui_text menu_revoke)"
-    echo "   $(ui_text menu_status)"
-    echo "   $(ui_text menu_uninstall)"
-    echo "   $(ui_text menu_reconfigure)"
-    echo "   $(ui_text menu_exit)"
-    echo "   $(ui_text menu_xray_install)"
-    echo "   $(ui_text menu_xray_add)"
-    echo "   $(ui_text menu_xray_list)"
-    echo "   $(ui_text menu_xray_revoke)"
-    echo "   $(ui_text menu_xray_status)"
-    echo "   $(ui_text menu_xray_uninstall)"
-    echo "   $(ui_text menu_xray_reconfigure)"
-    echo "   $(ui_text menu_hy2_install)"
-    echo "   $(ui_text menu_hy2_add)"
-    echo "   $(ui_text menu_hy2_list)"
-    echo "   $(ui_text menu_hy2_revoke)"
-    echo "   $(ui_text menu_hy2_status)"
-    echo "   $(ui_text menu_hy2_uninstall)"
-    echo "   $(ui_text menu_hy2_reconfigure)"
-    echo "   $(ui_text menu_updates)"
-    echo ""
-    echo "$(ui_text menu_tip)"
-    until [[ ${MENU_OPTION} =~ ^([1-9]|1[0-9]|2[0-2])$ ]]; do
-        read -rp "$(ui_text menu_select)" MENU_OPTION < /dev/tty
+    local i
+    for ((i=0; i<${#menu_labels[@]}; i++)); do
+        printf '   %d) %s\n' "$((i + 1))" "${menu_labels[$i]}"
     done
-    case "${MENU_OPTION}" in
-    1) menu_add_client ;;
-    2) menu_list_clients ;;
-    3) menu_revoke_client ;;
-    4) menu_show_status ;;
-    5) step_uninstall ;;
-    6)
+    echo ""
+    printf -v prompt "$(ui_text menu_dynamic_select)" "${#menu_actions[@]}"
+    until [[ "$MENU_OPTION" =~ ^[0-9]+$ ]] \
+        && (( MENU_OPTION >= 1 && MENU_OPTION <= ${#menu_actions[@]} )); do
+        read -rp "$prompt" MENU_OPTION < /dev/tty
+    done
+    action="${menu_actions[$((MENU_OPTION - 1))]}"
+    case "$action" in
+    awg_add) menu_add_client ;;
+    awg_list) menu_list_clients ;;
+    awg_revoke) menu_revoke_client ;;
+    awg_status) menu_show_status ;;
+    awg_uninstall) step_uninstall ;;
+    awg_reconfigure)
         MENU_ACTION="reconfigure"
         FORCE_REINSTALL=1
         ;;
-    7) exit 0 ;;
-    8) step_install_xray ;;
-    9) menu_xray_add_client ;;
-    10) menu_xray_list_clients ;;
-    11) menu_xray_revoke_client ;;
-    12) menu_xray_show_status ;;
-    13) step_uninstall_xray ;;
-    14) step_reconfigure_xray ;;
-    15) step_install_hy2 ;;
-    16) menu_hy2_add_client ;;
-    17) menu_hy2_list_clients ;;
-    18) menu_hy2_revoke_client ;;
-    19) menu_hy2_show_status ;;
-    20) step_uninstall_hy2 ;;
-    21) step_reconfigure_hy2 ;;
-    22) menu_updates ;;
+    xray_add) menu_xray_add_client ;;
+    xray_list) menu_xray_list_clients ;;
+    xray_revoke) menu_xray_revoke_client ;;
+    xray_status) menu_xray_show_status ;;
+    xray_uninstall) step_uninstall_xray ;;
+    xray_reconfigure) step_reconfigure_xray ;;
+    hy2_add) menu_hy2_add_client ;;
+    hy2_list) menu_hy2_list_clients ;;
+    hy2_revoke) menu_hy2_revoke_client ;;
+    hy2_status) menu_hy2_show_status ;;
+    hy2_uninstall) step_uninstall_hy2 ;;
+    hy2_reconfigure) step_reconfigure_hy2 ;;
+    install_awg)
+        MENU_ACTION="reconfigure"
+        FORCE_REINSTALL=1
+        INSTALL_AWG=1
+        ;;
+    install_xray) step_install_xray ;;
+    install_hy2) step_install_hy2 ;;
+    updates) menu_updates ;;
+    exit) exit 0 ;;
     esac
 }
 
