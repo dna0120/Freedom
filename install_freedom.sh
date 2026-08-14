@@ -60,7 +60,7 @@ HY2_MANAGE_SCRIPT_PATH="$HY2_DIR/manage_hysteria.sh"
 # Format: sha256sum output (hex, 64 chars).
 COMMON_SCRIPT_SHA256="ca3bba0f989ab01775ad91803fb59089cb27039102b594b337bf4299d3f640b4"
 MANAGE_SCRIPT_SHA256="7d6c0a7f0a0983952e4b6a055f0553385d402cc7d017ffd91e1a4707485044d0"
-XRAY_COMMON_SCRIPT_SHA256="f6225147c79b34861fa6ba401f7b379690bd2bc7f544264ce961ae4d287baa6f"
+XRAY_COMMON_SCRIPT_SHA256="c4924064e031b43f66c0479299c4f56f3407a73528d3a426ae97b884a67c4570"
 XRAY_MANAGE_SCRIPT_SHA256="a1cd85abb8483d2432ab478f26eb1728f75a88390b437cdbd4fa09cecf978fd8"
 HY2_COMMON_SCRIPT_SHA256="949d8f4e87320b9c90c8b8db33dd93761a987fa0a20fbf94196d05a1003fd536"
 HY2_MANAGE_SCRIPT_SHA256="9276c9694445a31f9341bfa3fcc06741028d7258ce26e8aa8e6be7865825561a"
@@ -4420,33 +4420,58 @@ xray_stack_ready() {
     [[ -x "$XRAY_BIN" && -f "$XRAY_CONF_JSON" && -f "$XRAY_CONFIG_FILE" ]]
 }
 
+# A helper left over from an older release keeps its bugs forever if we only
+# check for existence, so compare against the pinned hash too. Locally seeded
+# copies (dev runs) are exempt — they are expected to differ.
+_helper_script_current() {
+    local file="$1" expected="$2" actual
+    [[ -f "$file" ]] || return 1
+    [[ "$expected" == "RELEASE_PLACEHOLDER" || -z "$expected" ]] && return 0
+    actual=$(sha256sum "$file" 2>/dev/null | awk '{print $1}')
+    [[ "$actual" == "$expected" ]]
+}
+
 ensure_xray_scripts() {
     mkdir -p "$XRAY_DIR" || die "Cannot create $XRAY_DIR"
     chmod 700 "$XRAY_DIR" 2>/dev/null || true
-    if [[ -f "$XRAY_COMMON_SCRIPT_PATH" && -f "$XRAY_MANAGE_SCRIPT_PATH" ]]; then
-        return 0
+    local seeded=0
+    [[ -f "$XRAY_DIR/.local-seed" ]] && seeded=1
+    if [[ "$seeded" -eq 1 ]]; then
+        [[ -f "$XRAY_COMMON_SCRIPT_PATH" && -f "$XRAY_MANAGE_SCRIPT_PATH" ]] && return 0
     fi
-    log_warn "Xray management scripts missing under $XRAY_DIR — downloading..."
-    [[ ! -f "$XRAY_COMMON_SCRIPT_PATH" ]] && \
+    local need_common=0 need_manage=0
+    _helper_script_current "$XRAY_COMMON_SCRIPT_PATH" "$XRAY_COMMON_SCRIPT_SHA256" || need_common=1
+    _helper_script_current "$XRAY_MANAGE_SCRIPT_PATH" "$XRAY_MANAGE_SCRIPT_SHA256" || need_manage=1
+    [[ "$need_common" -eq 0 && "$need_manage" -eq 0 ]] && return 0
+    log_warn "Xray management scripts missing or outdated under $XRAY_DIR — downloading..."
+    [[ "$need_common" -eq 1 ]] && \
         _secure_download_strict "$XRAY_COMMON_SCRIPT_URL" "$XRAY_COMMON_SCRIPT_PATH" \
             "$XRAY_COMMON_SCRIPT_SHA256" "xray_common.sh"
-    [[ ! -f "$XRAY_MANAGE_SCRIPT_PATH" ]] && \
+    [[ "$need_manage" -eq 1 ]] && \
         _secure_download_strict "$XRAY_MANAGE_SCRIPT_URL" "$XRAY_MANAGE_SCRIPT_PATH" \
             "$XRAY_MANAGE_SCRIPT_SHA256" "manage_xray.sh"
+    return 0
 }
 
 # Prefer local copies from the same directory as this installer (dev / first push).
 xray_seed_scripts_from_installer_dir() {
-    local src_dir
+    local src_dir seeded=0
     src_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     mkdir -p "$XRAY_DIR" || return 1
     if [[ -f "$src_dir/xray_common.sh" ]]; then
         cp -f "$src_dir/xray_common.sh" "$XRAY_COMMON_SCRIPT_PATH"
         chmod 700 "$XRAY_COMMON_SCRIPT_PATH"
+        seeded=1
     fi
     if [[ -f "$src_dir/manage_xray.sh" ]]; then
         cp -f "$src_dir/manage_xray.sh" "$XRAY_MANAGE_SCRIPT_PATH"
         chmod 700 "$XRAY_MANAGE_SCRIPT_PATH"
+        seeded=1
+    fi
+    if [[ "$seeded" -eq 1 ]]; then
+        : > "$XRAY_DIR/.local-seed"
+    else
+        rm -f "$XRAY_DIR/.local-seed" 2>/dev/null || true
     fi
 }
 
@@ -4547,9 +4572,7 @@ step_install_xray() {
     mkdir -p "$XRAY_DIR" "$XRAY_CLIENTS_DIR" || die "Cannot create $XRAY_DIR"
     chmod 700 "$XRAY_DIR" "$XRAY_CLIENTS_DIR"
     xray_seed_scripts_from_installer_dir
-    if [[ ! -f "$XRAY_COMMON_SCRIPT_PATH" ]]; then
-        ensure_xray_scripts
-    fi
+    ensure_xray_scripts
     # shellcheck source=/dev/null
     source "$XRAY_COMMON_SCRIPT_PATH"
 
@@ -4830,29 +4853,43 @@ hy2_stack_ready() {
 ensure_hy2_scripts() {
     mkdir -p "$HY2_DIR" || die "Cannot create $HY2_DIR"
     chmod 700 "$HY2_DIR" 2>/dev/null || true
-    if [[ -f "$HY2_COMMON_SCRIPT_PATH" && -f "$HY2_MANAGE_SCRIPT_PATH" ]]; then
-        return 0
+    local seeded=0
+    [[ -f "$HY2_DIR/.local-seed" ]] && seeded=1
+    if [[ "$seeded" -eq 1 ]]; then
+        [[ -f "$HY2_COMMON_SCRIPT_PATH" && -f "$HY2_MANAGE_SCRIPT_PATH" ]] && return 0
     fi
-    log_warn "Hysteria2 management scripts missing under $HY2_DIR — downloading..."
-    [[ ! -f "$HY2_COMMON_SCRIPT_PATH" ]] && \
+    local need_common=0 need_manage=0
+    _helper_script_current "$HY2_COMMON_SCRIPT_PATH" "$HY2_COMMON_SCRIPT_SHA256" || need_common=1
+    _helper_script_current "$HY2_MANAGE_SCRIPT_PATH" "$HY2_MANAGE_SCRIPT_SHA256" || need_manage=1
+    [[ "$need_common" -eq 0 && "$need_manage" -eq 0 ]] && return 0
+    log_warn "Hysteria2 management scripts missing or outdated under $HY2_DIR — downloading..."
+    [[ "$need_common" -eq 1 ]] && \
         _secure_download_strict "$HY2_COMMON_SCRIPT_URL" "$HY2_COMMON_SCRIPT_PATH" \
             "$HY2_COMMON_SCRIPT_SHA256" "hysteria_common.sh"
-    [[ ! -f "$HY2_MANAGE_SCRIPT_PATH" ]] && \
+    [[ "$need_manage" -eq 1 ]] && \
         _secure_download_strict "$HY2_MANAGE_SCRIPT_URL" "$HY2_MANAGE_SCRIPT_PATH" \
             "$HY2_MANAGE_SCRIPT_SHA256" "manage_hysteria.sh"
+    return 0
 }
 
 hy2_seed_scripts_from_installer_dir() {
-    local src_dir
+    local src_dir seeded=0
     src_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     mkdir -p "$HY2_DIR" || return 1
     if [[ -f "$src_dir/hysteria_common.sh" ]]; then
         cp -f "$src_dir/hysteria_common.sh" "$HY2_COMMON_SCRIPT_PATH"
         chmod 700 "$HY2_COMMON_SCRIPT_PATH"
+        seeded=1
     fi
     if [[ -f "$src_dir/manage_hysteria.sh" ]]; then
         cp -f "$src_dir/manage_hysteria.sh" "$HY2_MANAGE_SCRIPT_PATH"
         chmod 700 "$HY2_MANAGE_SCRIPT_PATH"
+        seeded=1
+    fi
+    if [[ "$seeded" -eq 1 ]]; then
+        : > "$HY2_DIR/.local-seed"
+    else
+        rm -f "$HY2_DIR/.local-seed" 2>/dev/null || true
     fi
 }
 
@@ -4879,9 +4916,7 @@ step_install_hy2() {
     mkdir -p "$HY2_DIR" "$HY2_CLIENTS_DIR" || die "Cannot create $HY2_DIR"
     chmod 700 "$HY2_DIR" "$HY2_CLIENTS_DIR"
     hy2_seed_scripts_from_installer_dir
-    if [[ ! -f "$HY2_COMMON_SCRIPT_PATH" ]]; then
-        ensure_hy2_scripts
-    fi
+    ensure_hy2_scripts
     # shellcheck source=/dev/null
     source "$HY2_COMMON_SCRIPT_PATH"
 

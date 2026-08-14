@@ -34,13 +34,15 @@ _xray_cleanup() {
     fi
 }
 
+# Optional $2 appends a suffix; xray picks the config parser from the file
+# extension, so the temp file it validates must still end in .json.
 xray_mktemp() {
-    local dir="${1:-}" f
+    local dir="${1:-}" suffix="${2:-}" f
     if [[ -n "$dir" ]]; then
         mkdir -p "$dir" 2>/dev/null
-        f=$(mktemp -p "$dir") || return 1
+        f=$(mktemp -p "$dir" "tmp.XXXXXXXXXX${suffix}") || return 1
     else
-        f=$(mktemp) || return 1
+        f=$(mktemp "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX${suffix}") || return 1
     fi
     _XRAY_TEMP_FILES+=("$f")
     [[ -n "${_XRAY_TEMP_REGISTRY:-}" ]] && printf '%s\n' "$f" >> "$_XRAY_TEMP_REGISTRY" 2>/dev/null
@@ -391,7 +393,7 @@ xray_render_server_config() {
     grpc_clients="$(xray_clients_json_array_for grpc reality)"
     cdn_xhttp_clients="$(xray_clients_json_array_for xhttp cdn)"
     cdn_grpc_clients="$(xray_clients_json_array_for grpc cdn)"
-    tmp="$(xray_mktemp "$(dirname "$XRAY_CONF_JSON")")" || return 1
+    tmp="$(xray_mktemp "$(dirname "$XRAY_CONF_JSON")" ".json")" || return 1
 
     if xray_cdn_enabled; then
         cdn_block=$(cat <<CDN
@@ -570,8 +572,26 @@ EOF
     chmod 600 "$XRAY_CONF_JSON"
 }
 
+# The upstream unit runs xray as nobody, which cannot read our 600-mode config
+# nor the Let's Encrypt keys used in CDN mode. A drop-in leaves that unit intact.
+xray_ensure_service_root() {
+    local dir="/etc/systemd/system/xray.service.d"
+    local file="$dir/20-freedom-root.conf"
+    systemctl list-unit-files xray.service >/dev/null 2>&1 || return 0
+    [[ -f "$file" ]] && return 0
+    mkdir -p "$dir" 2>/dev/null || return 0
+    cat > "$file" <<'EOF'
+[Service]
+User=root
+Group=root
+EOF
+    systemctl daemon-reload 2>/dev/null || true
+    return 0
+}
+
 xray_apply_config() {
     xray_render_server_config || return 1
+    xray_ensure_service_root
     if systemctl list-unit-files xray.service >/dev/null 2>&1; then
         if systemctl is-active --quiet xray; then
             systemctl reload xray 2>/dev/null || systemctl restart xray || return 1
