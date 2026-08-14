@@ -123,8 +123,11 @@ case "$COMMAND" in
         mkdir -p "$HY2_CLIENTS_DIR"
         exec 9>"$HY2_DIR/.hy2_config.lock"
         flock -w 60 9 || die "Could not lock $HY2_DIR/.hy2_config.lock"
-        link="$(hy2_add_client "$CLIENT_NAME" | grep '^hysteria2://' | tail -n1)" \
+        # Not through a pipeline: that hides a failing hy2_add_client behind
+        # grep's exit status. The link is already stored in the .url file.
+        hy2_add_client "$CLIENT_NAME" >/dev/null \
             || die "Failed to add client '$CLIENT_NAME'"
+        link="$(tr -d '\r\n' < "$HY2_CLIENTS_DIR/${CLIENT_NAME}.url" 2>/dev/null)"
         [[ -n "$link" ]] || die "Failed to add client '$CLIENT_NAME'"
         flock -u 9
         echo ""

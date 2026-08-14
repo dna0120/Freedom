@@ -79,11 +79,13 @@ hy2_urlencode() {
     printf '%s' "$out"
 }
 
+# Always emit a double-quoted scalar: an unquoted name like 01 is read back as
+# a number, which silently breaks the userpass map and yields auth errors.
 hy2_yaml_escape() {
     local s="$1"
     s="${s//\\/\\\\}"
     s="${s//\"/\\\"}"
-    printf '%s' "$s"
+    printf '"%s"' "$s"
 }
 
 hy2_random_udp_port() {
@@ -242,7 +244,7 @@ hy2_render_server_config() {
     users_block="$(hy2_userpass_yaml)"
     if [[ -z "$users_block" ]]; then
         # Keep auth section valid with a disabled placeholder until first client.
-        users_block="    _bootstrap: $(hy2_rand_password | tr -d '\n')"
+        users_block="    \"_bootstrap\": $(hy2_yaml_escape "$(hy2_rand_password | tr -d '\n')")"
     fi
     obfs_block=""
     if [[ -n "${HY2_OBFS:-}" ]]; then
@@ -259,8 +261,8 @@ OBFS
 listen: :${HY2_PORT}
 
 tls:
-  cert: ${HY2_TLS_CERT}
-  key: ${HY2_TLS_KEY}
+  cert: $(hy2_yaml_escape "$HY2_TLS_CERT")
+  key: $(hy2_yaml_escape "$HY2_TLS_KEY")
 
 auth:
   type: userpass
@@ -272,7 +274,7 @@ ${obfs_block}
 masquerade:
   type: proxy
   proxy:
-    url: ${HY2_MASQUERADE}
+    url: $(hy2_yaml_escape "$HY2_MASQUERADE")
     rewriteHost: true
 EOF
     chmod 600 "$tmp"
@@ -325,20 +327,22 @@ hy2_write_client_files() {
     printf 'HY2_CLIENT_NAME=%s\nHY2_CLIENT_USER=%s\nHY2_CLIENT_PASS=%s\n' \
         "$name" "$user" "$pass" > "$HY2_CLIENTS_DIR/${name}.meta"
     chmod 600 "$HY2_CLIENTS_DIR/${name}.meta"
+    local insecure_yaml="false"
+    [[ "${HY2_INSECURE:-1}" == "1" ]] && insecure_yaml="true"
     tmp="$(hy2_mktemp "$HY2_CLIENTS_DIR")" || return 1
     cat > "$tmp" <<EOF
-server: ${host}:${HY2_PORT}
-auth: ${user}:${pass}
+server: $(hy2_yaml_escape "${host}:${HY2_PORT}")
+auth: $(hy2_yaml_escape "${user}:${pass}")
 tls:
-  sni: ${HY2_SNI}
-  insecure: ${HY2_INSECURE}
+  sni: $(hy2_yaml_escape "$HY2_SNI")
+  insecure: ${insecure_yaml}
 EOF
     if [[ -n "${HY2_OBFS:-}" ]]; then
         cat >> "$tmp" <<EOF
 obfs:
   type: salamander
   salamander:
-    password: ${HY2_OBFS}
+    password: $(hy2_yaml_escape "$HY2_OBFS")
 EOF
     fi
     chmod 600 "$tmp"
@@ -350,6 +354,29 @@ EOF
 
 hy2_client_exists() {
     [[ -f "$HY2_CLIENTS_DIR/${1}.meta" ]]
+}
+
+# Port, SNI or obfs changes invalidate every issued profile, so rewrite them.
+hy2_refresh_client_files() {
+    local f name user pass count=0
+    shopt -s nullglob
+    for f in "$HY2_CLIENTS_DIR"/*.meta; do
+        name="$(basename "$f" .meta)"
+        # shellcheck source=/dev/null
+        source "$f"
+        user="${HY2_CLIENT_USER:-$name}"
+        pass="${HY2_CLIENT_PASS:-}"
+        [[ -n "$pass" ]] || continue
+        hy2_write_client_files "$name" "$user" "$pass" >/dev/null || continue
+        if command -v qrencode >/dev/null 2>&1; then
+            qrencode -t png -o "$HY2_CLIENTS_DIR/${name}.png" \
+                < "$HY2_CLIENTS_DIR/${name}.url" 2>/dev/null || true
+        fi
+        count=$((count + 1))
+    done
+    shopt -u nullglob
+    [[ "$count" -gt 0 ]] && log "Refreshed $count Hysteria2 client profile(s)."
+    return 0
 }
 
 hy2_add_client() {
