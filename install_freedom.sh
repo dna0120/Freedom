@@ -5834,19 +5834,25 @@ step_apply_updates() {
     hc_sha="$(_extract_quoted_assign "$new_installer" HY2_COMMON_SCRIPT_SHA256)"
     hm_sha="$(_extract_quoted_assign "$new_installer" HY2_MANAGE_SCRIPT_SHA256)"
 
+    local running_hash="" fresh_hash saved_tmp
+    fresh_hash="$(sha256sum "$new_installer" | awk '{print $1}')"
+    [[ -f "${BASH_SOURCE[0]}" ]] && \
+        running_hash="$(sha256sum "${BASH_SOURCE[0]}" 2>/dev/null | awk '{print $1}')"
+
+    # Rename instead of overwrite: this script may itself be $AWG_DIR/install_freedom.sh,
+    # and bash keeps reading the file it started from while it runs.
     mkdir -p "$AWG_DIR"
-    chmod 700 "$new_installer"
-    cp -f "$new_installer" "$AWG_DIR/install_freedom.sh"
-    chmod 700 "$AWG_DIR/install_freedom.sh"
+    saved_tmp="$(mktemp -p "$AWG_DIR" .install_freedom.XXXXXX)" \
+        || die "Cannot stage the new installer in $AWG_DIR"
+    cp -f "$new_installer" "$saved_tmp" || { rm -f "$saved_tmp"; die "Cannot stage the new installer"; }
+    chmod 700 "$saved_tmp"
+    mv -f "$saved_tmp" "$AWG_DIR/install_freedom.sh" \
+        || { rm -f "$saved_tmp"; die "Cannot save the new installer"; }
     log "Saved installer copy: $AWG_DIR/install_freedom.sh"
 
     # The rest of the update (including migrations for older layouts) must run
     # from the version being installed, not from the copy that started it.
     if [[ "${UPDATE_SELF_REEXEC:-0}" -eq 0 ]]; then
-        local running_hash="" fresh_hash
-        fresh_hash="$(sha256sum "$new_installer" | awk '{print $1}')"
-        [[ -f "${BASH_SOURCE[0]}" ]] && \
-            running_hash="$(sha256sum "${BASH_SOURCE[0]}" 2>/dev/null | awk '{print $1}')"
         if [[ "$running_hash" != "$fresh_hash" ]]; then
             rm -rf "$tmpdir"
             log "Continuing the update with the freshly downloaded installer..."
