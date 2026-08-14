@@ -7,20 +7,20 @@ Script cài đặt và quản lý **AmneziaWG** và **Xray (VLESS + REALITY)** t
 Chạy bằng root:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/dna0120/Freedom/main/install_amneziawg.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/dna0120/Freedom/main/install_freedom.sh)
 ```
 
 Không phải root:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dna0120/Freedom/main/install_amneziawg.sh -o awg.sh && sudo bash awg.sh
+curl -fsSL https://raw.githubusercontent.com/dna0120/Freedom/main/install_freedom.sh -o freedom.sh && sudo bash freedom.sh
 ```
 
 Script tự tải các file phụ (`awg_common.sh`, `manage_amneziawg.sh`, `xray_common.sh`, `manage_xray.sh`) nên chỉ cần đúng một lệnh trên.
 
 ## Dùng lại sau khi cài
 
-Chạy lại đúng lệnh trên (hoặc `sudo bash install_amneziawg.sh` nếu còn file) — script phát hiện đã cài và mở thẳng menu quản lý.
+Chạy lại đúng lệnh trên (hoặc `sudo bash install_freedom.sh` nếu còn file) — script phát hiện đã cài và mở thẳng menu quản lý.
 
 ### AmneziaWG (1–7)
 - Thêm / list / thu hồi client
@@ -35,8 +35,8 @@ Chạy lại đúng lệnh trên (hoặc `sudo bash install_amneziawg.sh` nếu 
 Hoặc:
 
 ```bash
-sudo ./install_amneziawg.sh --install-xray
-sudo ./install_amneziawg.sh --uninstall-xray
+sudo ./install_freedom.sh --install-xray
+sudo ./install_freedom.sh --uninstall-xray
 ```
 
 Xray dùng core chính thức: [XTLS/Xray-core](https://github.com/XTLS/Xray-core) qua [Xray-install](https://github.com/XTLS/Xray-install).
@@ -51,5 +51,5 @@ Trong quá trình cài (interactive), script sẽ hỏi:
 Hoặc truyền sẵn:
 
 ```bash
-sudo ./install_amneziawg.sh --dns=8.8.8.8,8.8.4.4 --mtu=1420
+sudo ./install_freedom.sh --dns=8.8.8.8,8.8.4.4 --mtu=1420
 ```

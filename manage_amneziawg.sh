@@ -273,7 +273,7 @@ log_msg() {
         echo "[$ts] ERROR: Log write error $LOG_FILE" >&2
     fi
 
-    # WARN and ERROR go to stderr (symmetry with install_amneziawg.sh:110+,
+    # WARN and ERROR go to stderr (symmetry with install_freedom.sh:110+,
     # important for CI/automation parsing: stdout = "data", stderr = "diagnostics").
     if [[ "$type" == "ERROR" || "$type" == "WARN" ]]; then
         printf "${color_start}%s${color_end}\n" "$entry" >&2
@@ -406,7 +406,7 @@ check_dependencies() {
         ok=0
     fi
     if [[ "$ok" -eq 0 ]]; then
-        die "Installation files not found. Run install_amneziawg.sh."
+        die "Installation files not found. Run install_freedom.sh."
     fi
 
     if ! command -v awg &>/dev/null; then die "'awg' not found."; fi
