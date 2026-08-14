@@ -16,6 +16,7 @@ XRAY_CLIENTS_DIR="${XRAY_CLIENTS_DIR:-$XRAY_DIR/clients}"
 XRAY_CONF_JSON="${XRAY_CONF_JSON:-/usr/local/etc/xray/config.json}"
 XRAY_BIN="${XRAY_BIN:-/usr/local/bin/xray}"
 XRAY_CERT_DIR="${XRAY_CERT_DIR:-$XRAY_DIR/certs}"
+XRAY_SNI_CANDIDATES_FILE="${XRAY_SNI_CANDIDATES_FILE:-$XRAY_DIR/sni_candidates.txt}"
 XRAY_COMMON_VERSION="5.21.2"
 
 _XRAY_TEMP_FILES=()
@@ -181,13 +182,33 @@ www.rakuten.co.jp
 www.nicovideo.jp
 www.jal.co.jp
 www.nintendo.co.jp
+www.ntt.com
+www.softbank.jp
+www.fujitsu.com
+www.hitachi.com
+www.panasonic.com
+www.canon.com
+www.ricoh.com
+www.sharp.co.jp
+www.mitsubishielectric.com
+www.asus.com
+www.lenovo.com
+www.dell.com
+www.hp.com
 www.sap.com
+www.ibm.com
 www.samsung.com
 www.sony.com
 www.intel.com
 www.apple.com
 www.microsoft.com
 EOF
+    # Users may continuously extend the pool without modifying this script.
+    # Blank lines, comments, ports and duplicate hosts are normalized below.
+    if [[ -f "$XRAY_SNI_CANDIDATES_FILE" && ! -L "$XRAY_SNI_CANDIDATES_FILE" ]]; then
+        sed 's/[[:space:]]*#.*$//; s/:443[[:space:]]*$//; /^[[:space:]]*$/d' \
+            "$XRAY_SNI_CANDIDATES_FILE"
+    fi
 }
 
 # REALITY relays the real handshake of the target. A target that negotiates a
@@ -203,6 +224,64 @@ xray_tls_ping_ok() {
         return 2
     fi
     return 0
+}
+
+# Print a tab-separated runtime report from this VPS:
+#   host  AVAILABLE|POST_QUANTUM|UNREACHABLE  TLS/KEX detail
+# Availability is deliberately measured live; a globally cached answer goes
+# stale when a site changes its TLS stack or resolves to another edge.
+xray_scan_destinations() {
+    local host out status detail available=0 pq=0 failed=0
+    local seen_file
+    seen_file="$(xray_mktemp)" || return 1
+    : > "$seen_file"
+    printf 'SNI\tSTATUS\tDETAIL\n'
+    while IFS= read -r host; do
+        host="${host//[[:space:]]/}"
+        host="${host%%:*}"
+        [[ "$host" =~ ^[A-Za-z0-9.-]+$ ]] || continue
+        grep -Fqx "$host" "$seen_file" 2>/dev/null && continue
+        printf '%s\n' "$host" >> "$seen_file"
+        out="$(timeout 20 "$XRAY_BIN" tls ping "$host" 2>/dev/null || true)"
+        if ! printf '%s\n' "$out" | grep -q 'Handshake succeeded'; then
+            status="UNREACHABLE"; detail="TLS ping failed"; failed=$((failed + 1))
+        elif ! printf '%s\n' "$out" | grep -qiE 'tls version: +tls ?1\.3'; then
+            status="UNREACHABLE"; detail="TLS 1.3 unavailable"; failed=$((failed + 1))
+        elif printf '%s\n' "$out" | grep -qiE 'post-quantum key exchange: +true|MLKEM'; then
+            status="POST_QUANTUM"; detail="X25519MLKEM768 (not usable by REALITY)"; pq=$((pq + 1))
+        else
+            status="AVAILABLE"; detail="TLS 1.3 + classic X25519"; available=$((available + 1))
+        fi
+        printf '%s\t%s\t%s\n' "$host" "$status" "$detail"
+    done < <(xray_dest_candidates)
+    printf 'SUMMARY\tAVAILABLE=%d\tPOST_QUANTUM=%d UNREACHABLE=%d\n' \
+        "$available" "$pq" "$failed"
+    (( available > 0 ))
+}
+
+xray_add_sni_candidate() {
+    local host="${1%%:*}" rc
+    host="${host//[[:space:]]/}"
+    [[ "$host" =~ ^([A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}$ ]] || {
+        log_error "Invalid SNI hostname: $host"
+        return 1
+    }
+    xray_tls_ping_ok "$host"
+    rc=$?
+    case "$rc" in
+        0) ;;
+        2) log_error "$host uses post-quantum key exchange and is not usable by REALITY"; return 1 ;;
+        *) log_error "$host failed the live TLS 1.3 check"; return 1 ;;
+    esac
+    mkdir -p "$(dirname "$XRAY_SNI_CANDIDATES_FILE")" || return 1
+    touch "$XRAY_SNI_CANDIDATES_FILE" || return 1
+    chmod 600 "$XRAY_SNI_CANDIDATES_FILE"
+    if grep -Fqx "$host" "$XRAY_SNI_CANDIDATES_FILE" 2>/dev/null; then
+        log "$host is already in the custom SNI list."
+        return 0
+    fi
+    printf '%s\n' "$host" >> "$XRAY_SNI_CANDIDATES_FILE"
+    log "Added verified REALITY SNI candidate: $host"
 }
 
 xray_pick_dest() {

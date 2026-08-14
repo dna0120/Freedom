@@ -76,6 +76,8 @@ Commands:
   list
   remove <name>
   status|check
+  check-sni
+  add-sni <hostname>
   reconfigure
 
 Options:
@@ -86,7 +88,7 @@ EOF
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        add|list|remove|status|check|reconfigure)
+        add|list|remove|status|check|check-sni|add-sni|reconfigure)
             COMMAND="$1" ;;
         --proto=*) CLIENT_PROTO="${1#*=}" ;;
         --yes|-y) AUTO_YES=1 ;;
@@ -176,6 +178,13 @@ case "$COMMAND" in
         ;;
     status|check)
         xray_status
+        ;;
+    check-sni)
+        xray_scan_destinations
+        ;;
+    add-sni)
+        [[ -n "$CLIENT_NAME" ]] || die "Usage: manage_xray.sh add-sni <hostname>"
+        xray_add_sni_candidate "$CLIENT_NAME"
         ;;
     reconfigure)
         xray_load_config || die "Xray is not configured"

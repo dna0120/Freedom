@@ -34,20 +34,24 @@ Chọn 2 hoặc 3 thì bỏ qua hoàn toàn phần cài AmneziaWG. Lựa chọn 
 
 Chạy lại đúng lệnh trên (hoặc `sudo bash install_freedom.sh`) — mở menu quản lý.
 
-### AmneziaWG (1–7)
+Menu được đánh số động: chỉ hiện thao tác của stack đã cài; stack còn thiếu chỉ có một mục **Cài thêm**.
+
+### AmneziaWG
 - Thêm / list / thu hồi client
 - Trạng thái, gỡ, cấu hình lại
 
-### Xray (8–14)
-- **8)** Cài Xray: Vision + XHTTP + **gRPC** (REALITY), tùy chọn **CDN/TLS front** (domain + cert, Cloudflare-friendly)
-- **9)** Thêm client — Vision / XHTTP / gRPC / CDN-XHTTP / CDN-gRPC, xuất QR + `vless://` + JSON
-- **10–12)** List / thu hồi / trạng thái
-- **13–14)** Gỡ Xray / cấu hình lại
+### Xray
+- Cài Xray: Vision + XHTTP + **gRPC** (REALITY), tùy chọn **CDN/TLS front**
+- Thêm client — Vision / XHTTP / gRPC / CDN-XHTTP / CDN-gRPC, xuất QR + `vless://` + JSON
+- List / thu hồi / trạng thái / gỡ / cấu hình lại
+- **Quét SNI REALITY khả dụng** trực tiếp từ VPS; tự loại host dùng `X25519MLKEM768`
+- CLI: `sudo bash /root/xray/manage_xray.sh check-sni`
+- Bổ sung và xác minh SNI riêng: `sudo bash /root/xray/manage_xray.sh add-sni example.com`
 
-### Hysteria2 (15–21)
-- **15)** Cài Hysteria2 (QUIC/UDP, masquerade, Salamander OBFS mặc định bật)
-- **16–19)** Thêm / list / thu hồi / trạng thái client (`hysteria2://` + YAML + QR)
-- **20–21)** Gỡ / cấu hình lại
+### Hysteria2
+- Cài Hysteria2 (QUIC/UDP, masquerade, Salamander OBFS mặc định bật)
+- Thêm / list / thu hồi / trạng thái client (`hysteria2://` + YAML + QR)
+- Gỡ / cấu hình lại
 
 Hoặc:
 
@@ -62,10 +66,10 @@ sudo ./install_freedom.sh --check-updates
 sudo ./install_freedom.sh --update
 ```
 
-### Cập nhật (menu 22)
+### Cập nhật
 
 - **`--check-updates`**: báo version script Freedom trên GitHub, pin bivlked vs latest, Xray/Hysteria2 local vs GitHub, và `apt-cache policy` cho `amneziawg-dkms` / `amneziawg-tools` (không tự `apt upgrade`).
-- **`--update` / menu 22**: tải lại helper scripts (SHA256), nâng cấp binary Xray và Hysteria2, **giữ nguyên client profile**. Không merge tự động code AmneziaWG từ bivlked — xem [UPSTREAM.md](UPSTREAM.md).
+- **`--update` / mục cập nhật trong menu**: tải lại helper scripts (SHA256), nâng cấp binary Xray và Hysteria2, **giữ nguyên client profile**. Không merge tự động code AmneziaWG từ bivlked — xem [UPSTREAM.md](UPSTREAM.md).
 
 Maintainer: `bash tools/check_upstream.sh` (exit 2 = có bản upstream mới).
 

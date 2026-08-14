@@ -60,8 +60,8 @@ HY2_MANAGE_SCRIPT_PATH="$HY2_DIR/manage_hysteria.sh"
 # Format: sha256sum output (hex, 64 chars).
 COMMON_SCRIPT_SHA256="ca3bba0f989ab01775ad91803fb59089cb27039102b594b337bf4299d3f640b4"
 MANAGE_SCRIPT_SHA256="7d6c0a7f0a0983952e4b6a055f0553385d402cc7d017ffd91e1a4707485044d0"
-XRAY_COMMON_SCRIPT_SHA256="72b7ebe5e4a303b886b6c30f40152727a3ba9474c49641ebaa01f5ad2edbd725"
-XRAY_MANAGE_SCRIPT_SHA256="ddc7a925b1906d17e68359a93f4b7a03a45b9485d85f4f0210b88369d9e0f0b8"
+XRAY_COMMON_SCRIPT_SHA256="e212094c343a315255026a6ab52a8af418e05b3face420cc8d4f4f0e5bae53f7"
+XRAY_MANAGE_SCRIPT_SHA256="67af68332ee0efbdc93233e4292385de3fdecd0e6b6775c8d45fa9157a8a8fc0"
 HY2_COMMON_SCRIPT_SHA256="949d8f4e87320b9c90c8b8db33dd93761a987fa0a20fbf94196d05a1003fd536"
 HY2_MANAGE_SCRIPT_SHA256="9276c9694445a31f9341bfa3fcc06741028d7258ce26e8aa8e6be7865825561a"
 
@@ -541,6 +541,7 @@ ui_text() {
                 menu_xray_list) echo "10) Danh sách client Xray" ;;
                 menu_xray_revoke) echo "11) Thu hồi client Xray" ;;
                 menu_xray_status) echo "12) Trạng thái Xray" ;;
+                menu_xray_sni_scan) echo "Quét SNI REALITY khả dụng" ;;
                 menu_xray_uninstall) echo "13) Gỡ Xray" ;;
                 menu_xray_reconfigure) echo "14) Cấu hình lại Xray" ;;
                 menu_hy2_install) echo "15) Cài / cấu hình Hysteria2" ;;
@@ -645,6 +646,7 @@ ui_text() {
                 menu_xray_list) echo "10) List Xray clients" ;;
                 menu_xray_revoke) echo "11) Revoke Xray client" ;;
                 menu_xray_status) echo "12) Show Xray status" ;;
+                menu_xray_sni_scan) echo "Scan available REALITY SNI targets" ;;
                 menu_xray_uninstall) echo "13) Uninstall Xray" ;;
                 menu_xray_reconfigure) echo "14) Reconfigure Xray" ;;
                 menu_hy2_install) echo "15) Install / configure Hysteria2" ;;
@@ -5512,6 +5514,7 @@ manageMenu() {
         _add_menu_item "$(_dynamic_label menu_xray_list)" xray_list
         _add_menu_item "$(_dynamic_label menu_xray_revoke)" xray_revoke
         _add_menu_item "$(_dynamic_label menu_xray_status)" xray_status
+        _add_menu_item "$(ui_text menu_xray_sni_scan)" xray_sni_scan
         _add_menu_item "$(_dynamic_label menu_xray_reconfigure)" xray_reconfigure
         _add_menu_item "$(_dynamic_label menu_xray_uninstall)" xray_uninstall
     else
@@ -5557,6 +5560,7 @@ manageMenu() {
     xray_list) menu_xray_list_clients ;;
     xray_revoke) menu_xray_revoke_client ;;
     xray_status) menu_xray_show_status ;;
+    xray_sni_scan) run_manage_xray check-sni ;;
     xray_uninstall) step_uninstall_xray ;;
     xray_reconfigure) step_reconfigure_xray ;;
     hy2_add) menu_hy2_add_client ;;
