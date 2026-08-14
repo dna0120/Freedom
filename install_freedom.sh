@@ -18,6 +18,8 @@ fi
 # --- Safe mode and Constants ---
 set -o pipefail
 SCRIPT_VERSION="5.21.2"
+UPSTREAM_AWG_PIN="v5.21.2"
+UPSTREAM_AWG_REPO="bivlked/amneziawg-installer"
 
 AWG_DIR="/root/awg"
 CONFIG_FILE="$AWG_DIR/awgsetup_cfg.init"
@@ -87,6 +89,8 @@ CLI_MTU=""
 CLI_BBR=""
 CLI_XRAY_DOMAIN=""
 CLI_HY2_DOMAIN=""
+CHECK_UPDATES=0
+APPLY_UPDATES=0
 
 # --- Auto-cleanup of temporary files ---
 _install_temp_files=()
@@ -153,6 +157,8 @@ while [[ $# -gt 0 ]]; do
         --uninstall-hysteria|--uninstall-hy2) UNINSTALL_HY2=1 ;;
         --xray-domain=*) CLI_XRAY_DOMAIN="${1#*=}" ;;
         --hy2-domain=*) CLI_HY2_DOMAIN="${1#*=}" ;;
+        --check-updates) CHECK_UPDATES=1 ;;
+        --update)        APPLY_UPDATES=1 ;;
         *) echo "Unknown argument: $1" >&2; HELP=1; HELP_EXIT_RC=1 ;;
     esac
     shift
@@ -536,8 +542,10 @@ ui_text() {
                 menu_hy2_status) echo "19) Trạng thái Hysteria2" ;;
                 menu_hy2_uninstall) echo "20) Gỡ Hysteria2" ;;
                 menu_hy2_reconfigure) echo "21) Cấu hình lại Hysteria2" ;;
-                menu_tip) echo "Mẹo: 1-7 AWG, 8-14 Xray, 15-21 Hysteria2. Cài lại full AWG: sudo bash $0 --force" ;;
-                menu_select) echo "Chọn tùy chọn [1-21]: " ;;
+                menu_updates) echo "22) Kiểm tra / cập nhật" ;;
+                menu_tip) echo "Mẹo: 1-7 AWG, 8-14 Xray, 15-21 Hysteria2, 22 = cập nhật. Cài lại full AWG: sudo bash $0 --force" ;;
+                menu_select) echo "Chọn tùy chọn [1-22]: " ;;
+                update_apply_prompt) echo "Áp dụng cập nhật script Freedom + binary Xray/Hysteria2? [Y/n]: " ;;
                 xray_proto_prompt) echo "Giao thức Xray [1]: " ;;
                 xray_proto_vision) echo "1) VLESS + REALITY + Vision (mặc định)" ;;
                 xray_proto_xhttp) echo "2) VLESS + REALITY + XHTTP" ;;
@@ -627,8 +635,10 @@ ui_text() {
                 menu_hy2_status) echo "19) Show Hysteria2 status" ;;
                 menu_hy2_uninstall) echo "20) Uninstall Hysteria2" ;;
                 menu_hy2_reconfigure) echo "21) Reconfigure Hysteria2" ;;
-                menu_tip) echo "Tip: 1-7 AWG, 8-14 Xray, 15-21 Hysteria2. Full AWG reinstall: sudo bash $0 --force" ;;
-                menu_select) echo "Select an option [1-21]: " ;;
+                menu_updates) echo "22) Check / apply updates" ;;
+                menu_tip) echo "Tip: 1-7 AWG, 8-14 Xray, 15-21 Hysteria2, 22 = updates. Full AWG reinstall: sudo bash $0 --force" ;;
+                menu_select) echo "Select an option [1-22]: " ;;
+                update_apply_prompt) echo "Apply Freedom script refresh + Xray/Hysteria2 binary upgrades? [Y/n]: " ;;
                 xray_proto_prompt) echo "Xray protocol [1]: " ;;
                 xray_proto_vision) echo "1) VLESS + REALITY + Vision (default)" ;;
                 xray_proto_xhttp) echo "2) VLESS + REALITY + XHTTP" ;;
@@ -852,6 +862,8 @@ Tùy chọn:
   --uninstall-hysteria  Gỡ Hysteria2
   --xray-domain=FQDN    Bật CDN/TLS front cho Xray với domain này
   --hy2-domain=FQDN     Domain/ACME cho Hysteria2 (không có = self-signed)
+  --check-updates       Kiểm tra bản mới (script Freedom, Xray, Hysteria2, gói AWG)
+  --update              Làm mới script Freedom + nâng cấp binary Xray/Hysteria2
   --diagnostic          Tạo báo cáo chẩn đoán và thoát
   -v, --verbose         Bật log chi tiết
   --no-color            Tắt màu terminal
@@ -891,10 +903,12 @@ Ví dụ:
   sudo bash install_freedom.sh --uninstall-xray
   sudo bash install_freedom.sh --install-hysteria
   sudo bash install_freedom.sh --uninstall-hysteria
+  sudo bash install_freedom.sh --check-updates
+  sudo bash install_freedom.sh --update
   sudo bash install_freedom.sh --diagnostic
 
 Sau khi cài, chạy lại script để mở menu quản lý:
-  1-7 AmneziaWG   8-14 Xray   15-21 Hysteria2
+  1-7 AmneziaWG   8-14 Xray   15-21 Hysteria2   22 cập nhật
 
 Repository: ${PROJECT_REPO_URL}
 EOF
@@ -912,6 +926,8 @@ Options:
   --uninstall-hysteria  Uninstall Hysteria2 only
   --xray-domain=FQDN    Enable Xray CDN/TLS front with this domain
   --hy2-domain=FQDN     Domain/ACME for Hysteria2 (omit = self-signed)
+  --check-updates       Report newer Freedom scripts, Xray, Hysteria2, AWG packages
+  --update              Refresh Freedom scripts + upgrade Xray/Hysteria2 binaries
   --diagnostic          Generate diagnostic report and exit
   -v, --verbose         Verbose output for debugging (including DEBUG)
   --no-color            Disable colored terminal output
@@ -964,10 +980,12 @@ Examples:
   sudo bash install_freedom.sh --uninstall-xray            # Uninstall Xray only
   sudo bash install_freedom.sh --install-hysteria          # Install Hysteria2
   sudo bash install_freedom.sh --uninstall-hysteria        # Uninstall Hysteria2 only
+  sudo bash install_freedom.sh --check-updates             # Report available updates
+  sudo bash install_freedom.sh --update                    # Apply script + binary updates
   sudo bash install_freedom.sh --diagnostic                # Diagnostics
 
 After installation, re-run this script (no flags) to open a management menu:
-  1-7 AmneziaWG   8-14 Xray   15-21 Hysteria2
+  1-7 AmneziaWG   8-14 Xray   15-21 Hysteria2   22 updates
   Same UX style as angristan/wireguard-install.
 
 Repository: ${PROJECT_REPO_URL}
@@ -4278,6 +4296,45 @@ verify_sha256() {
     return 0
 }
 
+# Always verify (used by --update). verify_sha256 may skip when AWG_BRANCH
+# does not match SCRIPT_VERSION; that is unsafe for a script refresh.
+_verify_sha256_required() {
+    local file="$1" expected="$2" label="$3" actual
+    if [[ "$expected" == "RELEASE_PLACEHOLDER" || -z "$expected" ]]; then
+        log_error "No SHA256 pin for $label — refusing to install an unverified file."
+        return 1
+    fi
+    actual=$(sha256sum "$file" 2>/dev/null | awk '{print $1}')
+    if [[ "$actual" != "$expected" ]]; then
+        log_error "SHA256 mismatch for $label!"
+        log_error "  Expected: $expected"
+        log_error "  Got:      $actual"
+        return 1
+    fi
+    log "SHA256 $label: OK"
+    return 0
+}
+
+_secure_download_strict() {
+    local url="$1" target="$2" expected_sha256="$3" label="$4"
+    local tmp target_dir
+    target_dir=$(dirname "$target")
+    mkdir -p "$target_dir" || die "Cannot create $target_dir"
+    tmp=$(mktemp -p "$target_dir" ".${label//\//_}.tmp.XXXXXX") \
+        || die "Failed to create temp file for $label"
+    if ! curl -fLso "$tmp" --max-time 60 --retry 2 "$url"; then
+        rm -f "$tmp" 2>/dev/null
+        die "$label download error"
+    fi
+    if ! _verify_sha256_required "$tmp" "$expected_sha256" "$label"; then
+        rm -f "$tmp" 2>/dev/null
+        die "$label integrity check failed (SHA256 mismatch). Update aborted."
+    fi
+    chmod 700 "$tmp" || { rm -f "$tmp"; die "chmod $label error"; }
+    mv -f "$tmp" "$target" || { rm -f "$tmp"; die "Failed to move $label"; }
+    log "$label downloaded and verified."
+}
+
 # _secure_download <url> <target> <expected_sha256> <label>
 # Atomic download:
 #   1. curl → mktemp on the same FS as target;
@@ -5265,9 +5322,10 @@ manageMenu() {
     echo "   $(ui_text menu_hy2_status)"
     echo "   $(ui_text menu_hy2_uninstall)"
     echo "   $(ui_text menu_hy2_reconfigure)"
+    echo "   $(ui_text menu_updates)"
     echo ""
     echo "$(ui_text menu_tip)"
-    until [[ ${MENU_OPTION} =~ ^([1-9]|1[0-9]|2[01])$ ]]; do
+    until [[ ${MENU_OPTION} =~ ^([1-9]|1[0-9]|2[0-2])$ ]]; do
         read -rp "$(ui_text menu_select)" MENU_OPTION < /dev/tty
     done
     case "${MENU_OPTION}" in
@@ -5295,6 +5353,7 @@ manageMenu() {
     19) menu_hy2_show_status ;;
     20) step_uninstall_hy2 ;;
     21) step_reconfigure_hy2 ;;
+    22) menu_updates ;;
     esac
 }
 
@@ -5302,6 +5361,8 @@ should_open_manage_menu() {
     [[ "$FORCE_REINSTALL" -eq 1 ]] && return 1
     [[ "$INSTALL_XRAY_ONLY" -eq 1 ]] && return 1
     [[ "$INSTALL_HY2_ONLY" -eq 1 ]] && return 1
+    [[ "$CHECK_UPDATES" -eq 1 ]] && return 1
+    [[ "$APPLY_UPDATES" -eq 1 ]] && return 1
     local awg_ok=0 xray_ok=0 hy2_ok=0
     if [[ -f "$SERVER_CONF_FILE" ]]; then
         if [[ -f "$STATE_FILE" ]]; then
@@ -5384,6 +5445,181 @@ run_selected_extra_stacks() {
     return 0
 }
 
+_extract_quoted_assign() {
+    local file="$1" key="$2"
+    awk -F= -v k="$key" '$1==k { gsub(/"/, "", $2); print $2; exit }' "$file"
+}
+
+_github_latest_tag() {
+    local repo="$1" json tag
+    json="$(curl -fsSL --max-time 20 -H "User-Agent: Freedom-updater" \
+        "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null)" || return 1
+    tag="$(printf '%s' "$json" | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4)"
+    [[ -n "$tag" ]] || return 1
+    printf '%s\n' "$tag"
+}
+
+_apt_pkg_versions() {
+    local pkg="$1" inst cand
+    command -v apt-cache >/dev/null 2>&1 || return 1
+    inst="$(apt-cache policy "$pkg" 2>/dev/null | awk '/Installed:/{print $2; exit}')"
+    cand="$(apt-cache policy "$pkg" 2>/dev/null | awk '/Candidate:/{print $2; exit}')"
+    printf '%s %s\n' "${inst:-(none)}" "${cand:-(none)}"
+}
+
+step_check_updates() {
+    local remote_installer remote_ver remote_pin local_hash remote_hash tag inst cand pkg
+    echo ""
+    log "### UPDATE CHECK ###"
+    log "Freedom installer: v${SCRIPT_VERSION} (AWG upstream pin ${UPSTREAM_AWG_PIN})"
+
+    remote_installer="$(mktemp)"
+    if curl -fLso "$remote_installer" --max-time 30 --retry 2 \
+        "${PROJECT_RAW_BASE}/install_freedom.sh"; then
+        remote_ver="$(_extract_quoted_assign "$remote_installer" SCRIPT_VERSION)"
+        remote_pin="$(_extract_quoted_assign "$remote_installer" UPSTREAM_AWG_PIN)"
+        remote_hash="$(sha256sum "$remote_installer" | awk '{print $1}')"
+        if [[ -f "${BASH_SOURCE[0]}" ]]; then
+            local_hash="$(sha256sum "${BASH_SOURCE[0]}" 2>/dev/null | awk '{print $1}')"
+        else
+            local_hash=""
+        fi
+        log "GitHub Freedom SCRIPT_VERSION: ${remote_ver:-unknown}"
+        [[ -n "$remote_pin" ]] && log "GitHub Freedom UPSTREAM_AWG_PIN: $remote_pin"
+        if [[ -n "$local_hash" && "$local_hash" == "$remote_hash" ]]; then
+            log "Freedom installer matches GitHub main."
+        else
+            log_warn "Freedom installer on GitHub differs from this running copy (refresh with --update)."
+        fi
+    else
+        log_warn "Could not fetch ${PROJECT_RAW_BASE}/install_freedom.sh"
+    fi
+    rm -f "$remote_installer"
+
+    if tag="$(_github_latest_tag "$UPSTREAM_AWG_REPO")"; then
+        if [[ "$tag" == "$UPSTREAM_AWG_PIN" ]]; then
+            log "bivlked AmneziaWG installer: $tag (pin current)"
+        else
+            log_warn "bivlked AmneziaWG installer: latest $tag, Freedom pin $UPSTREAM_AWG_PIN"
+            log_warn "Do not auto-merge. See UPSTREAM.md / bash tools/check_upstream.sh"
+        fi
+    else
+        log_warn "Could not query GitHub for ${UPSTREAM_AWG_REPO}"
+    fi
+
+    if [[ -x "$XRAY_BIN" ]]; then
+        log "Xray local: $("$XRAY_BIN" version 2>/dev/null | head -n1)"
+        if tag="$(_github_latest_tag "XTLS/Xray-core")"; then
+            log "Xray-core latest release: $tag"
+        fi
+    else
+        log "Xray: not installed"
+    fi
+
+    if [[ -x "$HY2_BIN" ]]; then
+        log "Hysteria2 local: $("$HY2_BIN" version 2>/dev/null | head -n1)"
+        if tag="$(_github_latest_tag "apernet/hysteria")"; then
+            log "Hysteria2 latest release: $tag"
+        fi
+    else
+        log "Hysteria2: not installed"
+    fi
+
+    if command -v apt-cache >/dev/null 2>&1; then
+        for pkg in amneziawg-dkms amneziawg-tools; do
+            read -r inst cand < <(_apt_pkg_versions "$pkg")
+            if [[ "$inst" == "(none)" || -z "$inst" ]]; then
+                log "apt $pkg: not installed"
+            elif [[ "$inst" == "$cand" ]]; then
+                log "apt $pkg: $inst (up to date)"
+            else
+                log_warn "apt $pkg: installed $inst → candidate $cand"
+                log_warn "Not applied automatically (DKMS/reboot). Review then: apt-get install --only-upgrade $pkg"
+            fi
+        done
+    fi
+    log "Check complete. Apply with: sudo bash $0 --update"
+}
+
+step_apply_updates() {
+    local tmpdir new_installer common_sha manage_sha xc_sha xm_sha hc_sha hm_sha
+    if [ "$(id -u)" -ne 0 ]; then die "Run the script as root (sudo bash $0 --update)."; fi
+    log "### APPLY UPDATES (scripts + Xray/Hysteria binaries; no AWG apt upgrade) ###"
+
+    tmpdir="$(mktemp -d)"
+    new_installer="$tmpdir/install_freedom.sh"
+    curl -fLso "$new_installer" --max-time 60 --retry 2 \
+        "${PROJECT_RAW_BASE}/install_freedom.sh" \
+        || die "Failed to download latest install_freedom.sh"
+    common_sha="$(_extract_quoted_assign "$new_installer" COMMON_SCRIPT_SHA256)"
+    manage_sha="$(_extract_quoted_assign "$new_installer" MANAGE_SCRIPT_SHA256)"
+    xc_sha="$(_extract_quoted_assign "$new_installer" XRAY_COMMON_SCRIPT_SHA256)"
+    xm_sha="$(_extract_quoted_assign "$new_installer" XRAY_MANAGE_SCRIPT_SHA256)"
+    hc_sha="$(_extract_quoted_assign "$new_installer" HY2_COMMON_SCRIPT_SHA256)"
+    hm_sha="$(_extract_quoted_assign "$new_installer" HY2_MANAGE_SCRIPT_SHA256)"
+
+    mkdir -p "$AWG_DIR"
+    chmod 700 "$new_installer"
+    cp -f "$new_installer" "$AWG_DIR/install_freedom.sh"
+    chmod 700 "$AWG_DIR/install_freedom.sh"
+    log "Saved installer copy: $AWG_DIR/install_freedom.sh"
+
+    if [[ -f "$SERVER_CONF_FILE" || -f "$COMMON_SCRIPT_PATH" ]]; then
+        _secure_download_strict "$COMMON_SCRIPT_URL" "$COMMON_SCRIPT_PATH" "$common_sha" "awg_common.sh"
+        _secure_download_strict "$MANAGE_SCRIPT_URL" "$MANAGE_SCRIPT_PATH" "$manage_sha" "manage_amneziawg.sh"
+    fi
+    if [[ -f "$XRAY_CONFIG_FILE" || -f "$XRAY_COMMON_SCRIPT_PATH" ]]; then
+        mkdir -p "$XRAY_DIR"
+        _secure_download_strict "$XRAY_COMMON_SCRIPT_URL" "$XRAY_COMMON_SCRIPT_PATH" "$xc_sha" "xray_common.sh"
+        _secure_download_strict "$XRAY_MANAGE_SCRIPT_URL" "$XRAY_MANAGE_SCRIPT_PATH" "$xm_sha" "manage_xray.sh"
+    fi
+    if [[ -f "$HY2_CONFIG_FILE" || -f "$HY2_COMMON_SCRIPT_PATH" ]]; then
+        mkdir -p "$HY2_DIR"
+        _secure_download_strict "$HY2_COMMON_SCRIPT_URL" "$HY2_COMMON_SCRIPT_PATH" "$hc_sha" "hysteria_common.sh"
+        _secure_download_strict "$HY2_MANAGE_SCRIPT_URL" "$HY2_MANAGE_SCRIPT_PATH" "$hm_sha" "manage_hysteria.sh"
+    fi
+    rm -rf "$tmpdir"
+
+    if [[ -x "$XRAY_BIN" || -f "$XRAY_CONFIG_FILE" ]]; then
+        log "Upgrading Xray-core via official Xray-install..."
+        bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install \
+            || log_warn "Xray-install upgrade failed."
+        if [[ -f "$XRAY_COMMON_SCRIPT_PATH" && -f "$XRAY_CONFIG_FILE" ]]; then
+            # shellcheck source=/dev/null
+            source "$XRAY_COMMON_SCRIPT_PATH"
+            xray_load_config 2>/dev/null || true
+            xray_apply_config || log_warn "xray_apply_config failed (clients/config kept on disk)."
+        fi
+    fi
+    if [[ -x "$HY2_BIN" || -f "$HY2_CONFIG_FILE" ]]; then
+        log "Upgrading Hysteria2 via official get.hy2.sh..."
+        HYSTERIA_USER=root bash <(curl -fsSL https://get.hy2.sh/) \
+            || log_warn "Hysteria2 upgrade failed."
+        if [[ -f "$HY2_COMMON_SCRIPT_PATH" && -f "$HY2_CONFIG_FILE" ]]; then
+            # shellcheck source=/dev/null
+            source "$HY2_COMMON_SCRIPT_PATH"
+            hy2_load_config 2>/dev/null || true
+            hy2_apply_config || log_warn "hy2_apply_config failed (clients/config kept on disk)."
+        fi
+    fi
+    log "AmneziaWG apt packages were NOT upgraded. Re-run --check-updates for candidate versions."
+    log "=== UPDATE APPLY COMPLETED (client profiles untouched) ==="
+}
+
+menu_updates() {
+    step_check_updates
+    local ans="y"
+    if [[ "${AUTO_YES:-0}" -eq 0 ]]; then
+        echo ""
+        read -rp "$(ui_text update_apply_prompt)" ans < /dev/tty
+    fi
+    if [[ -z "$ans" || "$ans" =~ ^[[:space:]]*[Yy]([Ee][Ss])?[[:space:]]*$ ]]; then
+        step_apply_updates
+    else
+        log "Update apply skipped."
+    fi
+}
+
 # ==============================================================================
 # Main execution loop
 # ==============================================================================
@@ -5404,6 +5640,17 @@ if [[ "$INSTALL_HY2_ONLY" -eq 1 ]]; then
     exit 0
 fi
 if [[ "$DIAGNOSTIC" -eq 1 ]]; then create_diagnostic_report; exit 0; fi
+if [[ "$CHECK_UPDATES" -eq 1 ]]; then
+    if [ "$(id -u)" -ne 0 ]; then die "Run the script as root (sudo bash $0 --check-updates)."; fi
+    step_check_updates
+    exit 0
+fi
+if [[ "$APPLY_UPDATES" -eq 1 ]]; then
+    if [ "$(id -u)" -ne 0 ]; then die "Run the script as root (sudo bash $0 --update)."; fi
+    step_check_updates
+    step_apply_updates
+    exit 0
+fi
 if [[ "$VERBOSE" -eq 1 ]]; then set -x; fi
 
 # AWG_FORCE_REINSTALL=1 in the environment is equivalent to --force.

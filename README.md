@@ -58,7 +58,16 @@ sudo ./install_freedom.sh --install-hysteria
 sudo ./install_freedom.sh --install-hysteria --hy2-domain=hy2.example.com
 sudo ./install_freedom.sh --uninstall-xray
 sudo ./install_freedom.sh --uninstall-hysteria
+sudo ./install_freedom.sh --check-updates
+sudo ./install_freedom.sh --update
 ```
+
+### Cập nhật (menu 22)
+
+- **`--check-updates`**: báo version script Freedom trên GitHub, pin bivlked vs latest, Xray/Hysteria2 local vs GitHub, và `apt-cache policy` cho `amneziawg-dkms` / `amneziawg-tools` (không tự `apt upgrade`).
+- **`--update` / menu 22**: tải lại helper scripts (SHA256), nâng cấp binary Xray và Hysteria2, **giữ nguyên client profile**. Không merge tự động code AmneziaWG từ bivlked — xem [UPSTREAM.md](UPSTREAM.md).
+
+Maintainer: `bash tools/check_upstream.sh` (exit 2 = có bản upstream mới).
 
 ## Stack chống kiểm duyệt
 

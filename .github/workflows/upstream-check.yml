@@ -1,0 +1,51 @@
+name: Upstream check
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check upstream sources
+        id: check
+        continue-on-error: true
+        run: |
+          set +e
+          bash tools/check_upstream.sh
+          echo "rc=$?" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-report
+          path: upstream/REPORT.md
+          if-no-files-found: ignore
+
+      - name: Open or update issue when updates exist
+        if: steps.check.outputs.rc == '2'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE="Upstream updates available"
+          BODY_FILE=upstream/REPORT.md
+          [[ -f "$BODY_FILE" ]] || { echo "No report"; exit 0; }
+          ISSUE=$(gh issue list --state open --search "$TITLE in:title" --json number,title \
+            --jq '.[] | select(.title=="'"$TITLE"'") | .number' | head -n1)
+          if [[ -n "$ISSUE" ]]; then
+            gh issue comment "$ISSUE" --body-file "$BODY_FILE"
+            echo "Commented on #$ISSUE"
+          else
+            gh issue create --title "$TITLE" --body-file "$BODY_FILE"
+            echo "Opened new issue"
+          fi

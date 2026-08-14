@@ -1,0 +1,43 @@
+{
+  "freedom_version": "5.21.2",
+  "sources": [
+    {
+      "id": "bivlked-awg",
+      "name": "AmneziaWG installer (bivlked)",
+      "repo": "bivlked/amneziawg-installer",
+      "pinned_tag": "v5.21.2",
+      "track": "releases",
+      "files": [
+        "install_amneziawg_en.sh",
+        "awg_common.sh",
+        "manage_amneziawg.sh"
+      ],
+      "note": "Freedom forked this installer. Do not auto-merge; cherry-pick fixes by hand."
+    },
+    {
+      "id": "xray-core",
+      "name": "Xray-core",
+      "repo": "XTLS/Xray-core",
+      "pinned_tag": "",
+      "track": "releases",
+      "note": "VPS installs latest via Xray-install. Pin is informational."
+    },
+    {
+      "id": "hysteria",
+      "name": "Hysteria2",
+      "repo": "apernet/hysteria",
+      "pinned_tag": "",
+      "track": "releases",
+      "note": "VPS installs latest via get.hy2.sh. Pin is informational."
+    },
+    {
+      "id": "angristan",
+      "name": "angristan/wireguard-install",
+      "repo": "angristan/wireguard-install",
+      "pinned_commit": "HEAD",
+      "track": "commits",
+      "branch": "master",
+      "note": "UX reference only (menu style). Not vendored into Freedom."
+    }
+  ]
+}
