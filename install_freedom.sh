@@ -5769,6 +5769,30 @@ step_check_updates() {
     log "Check complete. Apply with: sudo bash $0 --update"
 }
 
+_svc_active() { systemctl is-active --quiet "$1" 2>/dev/null; }
+
+# Guard against an update leaving a core down. If a service that was serving
+# clients before the update is not active afterwards, restore the config that
+# was live before we touched it and restart, so clients keep their profiles and
+# reconnect instead of facing a dead core.
+#   $1 service  $2 live-config-path  $3 backup-path  $4 was_active(0/1)  $5 label
+_update_guard_service() {
+    local svc="$1" conf="$2" backup="$3" was_active="$4" label="$5"
+    if [[ "$was_active" -ne 1 ]]; then rm -f "$backup" 2>/dev/null; return 0; fi
+    if _svc_active "$svc"; then rm -f "$backup" 2>/dev/null; return 0; fi
+    log_warn "$label did not come back after the update; restoring the previous working config."
+    if [[ -n "$backup" && -f "$backup" ]]; then
+        cp -f "$backup" "$conf" 2>/dev/null && chmod 600 "$conf" 2>/dev/null || true
+    fi
+    systemctl restart "$svc" 2>/dev/null || true
+    if _svc_active "$svc"; then
+        log "$label restored and running on the previous config (client profiles unchanged)."
+    else
+        log_warn "$label is still down — inspect: journalctl -u $svc -n 50"
+    fi
+    rm -f "$backup" 2>/dev/null
+}
+
 # A REALITY dest chosen by an older release can start offering post-quantum key
 # exchange, which breaks client handshakes. Swap it and reissue the profiles.
 update_repair_xray_dest() {
@@ -5879,6 +5903,9 @@ step_apply_updates() {
     rm -rf "$tmpdir"
 
     if [[ -x "$XRAY_BIN" || -f "$XRAY_CONFIG_FILE" ]]; then
+        local xray_was=0 xray_bak=""
+        _svc_active xray && xray_was=1
+        [[ -f "$XRAY_CONF_JSON" ]] && { xray_bak="$(mktemp)"; cp -f "$XRAY_CONF_JSON" "$xray_bak"; }
         log "Upgrading Xray-core via official Xray-install..."
         bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install \
             || log_warn "Xray-install upgrade failed."
@@ -5889,8 +5916,12 @@ step_apply_updates() {
             xray_apply_config || log_warn "xray_apply_config failed (clients/config kept on disk)."
             update_repair_xray_dest
         fi
+        _update_guard_service xray "$XRAY_CONF_JSON" "$xray_bak" "$xray_was" "Xray"
     fi
     if [[ -x "$HY2_BIN" || -f "$HY2_CONFIG_FILE" ]]; then
+        local hy2_was=0 hy2_bak=""
+        _svc_active hysteria-server && hy2_was=1
+        [[ -f "$HY2_SERVER_YAML" ]] && { hy2_bak="$(mktemp)"; cp -f "$HY2_SERVER_YAML" "$hy2_bak"; }
         log "Upgrading Hysteria2 via official get.hy2.sh..."
         HYSTERIA_USER=root bash <(curl -fsSL https://get.hy2.sh/) \
             || log_warn "Hysteria2 upgrade failed."
@@ -5901,6 +5932,7 @@ step_apply_updates() {
             hy2_apply_config || log_warn "hy2_apply_config failed (clients/config kept on disk)."
             update_repair_hy2_cert
         fi
+        _update_guard_service hysteria-server "$HY2_SERVER_YAML" "$hy2_bak" "$hy2_was" "Hysteria2"
     fi
     log "AmneziaWG apt packages were NOT upgraded. Re-run --check-updates for candidate versions."
     log "=== UPDATE APPLY COMPLETED ==="
