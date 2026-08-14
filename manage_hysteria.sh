@@ -5,7 +5,7 @@ if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
 fi
 
 # ==============================================================================
-# Xray (VLESS + REALITY / CDN) peer management
+# Hysteria2 peer management
 # Author: @dna0120
 # Version: 5.21.2
 # Repository: https://github.com/dna0120/Freedom
@@ -13,24 +13,23 @@ fi
 
 SCRIPT_VERSION="5.21.2"
 set -o pipefail
-XRAY_DIR="/root/xray"
-XRAY_CONFIG_FILE="$XRAY_DIR/xraysetup_cfg.init"
-XRAY_CLIENTS_DIR="$XRAY_DIR/clients"
-XRAY_CONF_JSON="/usr/local/etc/xray/config.json"
-XRAY_BIN="/usr/local/bin/xray"
-COMMON_SCRIPT_PATH="$XRAY_DIR/xray_common.sh"
-LOG_FILE="$XRAY_DIR/manage_xray.log"
+HY2_DIR="/root/hysteria"
+HY2_CONFIG_FILE="$HY2_DIR/hy2setup_cfg.init"
+HY2_CLIENTS_DIR="$HY2_DIR/clients"
+HY2_SERVER_YAML="/etc/hysteria/config.yaml"
+HY2_BIN="/usr/local/bin/hysteria"
+COMMON_SCRIPT_PATH="$HY2_DIR/hysteria_common.sh"
+LOG_FILE="$HY2_DIR/manage_hysteria.log"
 NO_COLOR=0
 AUTO_YES=0
 COMMAND=""
 CLIENT_NAME=""
-CLIENT_PROTO="vision"
 
 _manage_cleaned=0
 _manage_cleanup() {
     [[ "$_manage_cleaned" -eq 1 ]] && return 0
     _manage_cleaned=1
-    type _xray_cleanup &>/dev/null && _xray_cleanup
+    type _hy2_cleanup &>/dev/null && _hy2_cleanup
 }
 _manage_on_signal() {
     _manage_cleanup
@@ -69,18 +68,18 @@ die() { log_error "$1"; exit 1; }
 
 usage() {
     cat <<EOF
-Usage: sudo bash manage_xray.sh <command> [args]
+Usage: sudo bash manage_hysteria.sh <command> [args]
 
 Commands:
-  add <name> [--proto=vision|xhttp|grpc|cdn-xhttp|cdn-grpc]
-  list
-  remove <name>
-  status|check
-  reconfigure
+  add <name>       Add a Hysteria2 client (userpass)
+  list             List clients
+  remove <name>    Revoke a client
+  status|check     Show Hysteria2 status
+  reconfigure      Re-apply server config
 
 Options:
-  -y, --yes     Skip confirmations
-  --no-color    Disable colors
+  -y, --yes        Skip confirmations
+  --no-color       Disable colors
 EOF
 }
 
@@ -88,7 +87,6 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         add|list|remove|status|check|reconfigure)
             COMMAND="$1" ;;
-        --proto=*) CLIENT_PROTO="${1#*=}" ;;
         --yes|-y) AUTO_YES=1 ;;
         --no-color) NO_COLOR=1 ;;
         --help|-h) usage; exit 0 ;;
@@ -114,71 +112,62 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 
 if [[ ! -f "$COMMON_SCRIPT_PATH" ]]; then
-    die "xray_common.sh not found at $COMMON_SCRIPT_PATH"
+    die "hysteria_common.sh not found at $COMMON_SCRIPT_PATH"
 fi
 # shellcheck source=/dev/null
 source "$COMMON_SCRIPT_PATH"
 
 case "$COMMAND" in
     add)
-        [[ -n "$CLIENT_NAME" ]] || die "Usage: manage_xray.sh add <name> [--proto=...]"
-        case "$CLIENT_PROTO" in
-            vision|1) CLIENT_PROTO="vision" ;;
-            xhttp|2) CLIENT_PROTO="xhttp" ;;
-            grpc|3) CLIENT_PROTO="grpc" ;;
-            cdn-xhttp|4) CLIENT_PROTO="cdn-xhttp" ;;
-            cdn-grpc|5) CLIENT_PROTO="cdn-grpc" ;;
-            *) die "Invalid --proto='$CLIENT_PROTO' (vision|xhttp|grpc|cdn-xhttp|cdn-grpc)" ;;
-        esac
-        mkdir -p "$XRAY_CLIENTS_DIR"
-        exec 9>"$XRAY_DIR/.xray_config.lock"
-        flock -w 60 9 || die "Could not lock $XRAY_DIR/.xray_config.lock"
-        link="$(xray_add_client "$CLIENT_NAME" "$CLIENT_PROTO" | grep '^vless://' | tail -n1)" \
+        [[ -n "$CLIENT_NAME" ]] || die "Usage: manage_hysteria.sh add <name>"
+        mkdir -p "$HY2_CLIENTS_DIR"
+        exec 9>"$HY2_DIR/.hy2_config.lock"
+        flock -w 60 9 || die "Could not lock $HY2_DIR/.hy2_config.lock"
+        link="$(hy2_add_client "$CLIENT_NAME" | grep '^hysteria2://' | tail -n1)" \
             || die "Failed to add client '$CLIENT_NAME'"
         [[ -n "$link" ]] || die "Failed to add client '$CLIENT_NAME'"
         flock -u 9
         echo ""
-        echo "Protocol: $CLIENT_PROTO"
-        echo "UUID:     $(awk -F= '/XRAY_CLIENT_UUID/{print $2}' "$XRAY_CLIENTS_DIR/${CLIENT_NAME}.meta")"
-        echo "JSON:     $XRAY_CLIENTS_DIR/${CLIENT_NAME}.json"
+        echo "User: $(awk -F= '/HY2_CLIENT_USER/{print $2}' "$HY2_CLIENTS_DIR/${CLIENT_NAME}.meta")"
+        echo "YAML: $HY2_CLIENTS_DIR/${CLIENT_NAME}.yaml"
         echo "Link:"
         echo "$link"
         echo ""
         if command -v qrencode >/dev/null 2>&1; then
             echo "$link" | qrencode -t ansiutf8 -l L || true
-            echo "$link" | qrencode -t png -o "$XRAY_CLIENTS_DIR/${CLIENT_NAME}.png" 2>/dev/null || true
-            [[ -f "$XRAY_CLIENTS_DIR/${CLIENT_NAME}.png" ]] && echo "QR image: $XRAY_CLIENTS_DIR/${CLIENT_NAME}.png"
+            echo "$link" | qrencode -t png -o "$HY2_CLIENTS_DIR/${CLIENT_NAME}.png" 2>/dev/null || true
+            [[ -f "$HY2_CLIENTS_DIR/${CLIENT_NAME}.png" ]] && echo "QR image: $HY2_CLIENTS_DIR/${CLIENT_NAME}.png"
         fi
         ;;
     list)
-        echo "NAME            PROTO       UUID"
-        echo "--------------  ----------  ------------------------------------"
-        xray_list_clients | while IFS=$'\t' read -r n p u; do
-            printf '%-14s  %-10s  %s\n' "$n" "$p" "$u"
+        echo "NAME            USER"
+        echo "--------------  ---------------"
+        hy2_list_clients | while IFS=$'\t' read -r n u; do
+            printf '%-14s  %s\n' "$n" "$u"
         done
         ;;
     remove)
-        [[ -n "$CLIENT_NAME" ]] || die "Usage: manage_xray.sh remove <name>"
+        [[ -n "$CLIENT_NAME" ]] || die "Usage: manage_hysteria.sh remove <name>"
         if [[ "$AUTO_YES" -eq 0 ]]; then
-            read -rp "Revoke Xray client '$CLIENT_NAME'? [y/N]: " confirm < /dev/tty
+            read -rp "Revoke Hysteria2 client '$CLIENT_NAME'? [y/N]: " confirm < /dev/tty
             [[ "$confirm" =~ ^[Yy] ]] || { echo "Cancelled."; exit 1; }
         fi
-        exec 9>"$XRAY_DIR/.xray_config.lock"
-        flock -w 60 9 || die "Could not lock $XRAY_DIR/.xray_config.lock"
-        xray_remove_client "$CLIENT_NAME" || die "Failed to revoke '$CLIENT_NAME'"
+        exec 9>"$HY2_DIR/.hy2_config.lock"
+        flock -w 60 9 || die "Could not lock $HY2_DIR/.hy2_config.lock"
+        hy2_remove_client "$CLIENT_NAME" || die "Failed to revoke '$CLIENT_NAME'"
         flock -u 9
-        log "Revoked Xray client '$CLIENT_NAME'"
+        log "Revoked Hysteria2 client '$CLIENT_NAME'"
         ;;
     status|check)
-        xray_status
+        hy2_status
         ;;
     reconfigure)
-        xray_load_config || die "Xray is not configured"
-        exec 9>"$XRAY_DIR/.xray_config.lock"
-        flock -w 60 9 || die "Could not lock $XRAY_DIR/.xray_config.lock"
-        xray_apply_config || die "Failed to apply Xray config"
+        hy2_load_config || die "Hysteria2 is not configured"
+        exec 9>"$HY2_DIR/.hy2_config.lock"
+        flock -w 60 9 || die "Could not lock $HY2_DIR/.hy2_config.lock"
+        hy2_apply_config || die "Failed to apply Hysteria2 config"
         flock -u 9
-        log "Xray config re-applied."
+        log "Hysteria2 config re-applied."
         ;;
     *)
         usage

@@ -1,6 +1,6 @@
-# AmneziaWG + Xray Installer
+# Freedom Installer (AmneziaWG + Xray + Hysteria2)
 
-Script cài đặt và quản lý **AmneziaWG** và **Xray (VLESS + REALITY)** trên cùng một VPS, menu kiểu angristan.
+Script cài đặt và quản lý **AmneziaWG**, **Xray (VLESS + REALITY / CDN)** và **Hysteria2** trên cùng một VPS, menu kiểu angristan.
 
 ## Quick Install (1 lệnh)
 
@@ -16,39 +16,57 @@ Không phải root:
 curl -fsSL https://raw.githubusercontent.com/dna0120/Freedom/main/install_freedom.sh -o freedom.sh && sudo bash freedom.sh
 ```
 
-Script tự tải các file phụ (`awg_common.sh`, `manage_amneziawg.sh`, `xray_common.sh`, `manage_xray.sh`) nên chỉ cần đúng một lệnh trên.
+Script tự tải các file phụ nên chỉ cần đúng một lệnh trên.
 
 ## Dùng lại sau khi cài
 
-Chạy lại đúng lệnh trên (hoặc `sudo bash install_freedom.sh` nếu còn file) — script phát hiện đã cài và mở thẳng menu quản lý.
+Chạy lại đúng lệnh trên (hoặc `sudo bash install_freedom.sh`) — mở menu quản lý.
 
 ### AmneziaWG (1–7)
 - Thêm / list / thu hồi client
 - Trạng thái, gỡ, cấu hình lại
 
 ### Xray (8–14)
-- **8)** Cài Xray (VLESS + REALITY Vision + XHTTP, 2 cổng TCP random)
-- **9)** Thêm client — hỏi Vision hoặc XHTTP, xuất QR + `vless://` + JSON
+- **8)** Cài Xray: Vision + XHTTP + **gRPC** (REALITY), tùy chọn **CDN/TLS front** (domain + cert, Cloudflare-friendly)
+- **9)** Thêm client — Vision / XHTTP / gRPC / CDN-XHTTP / CDN-gRPC, xuất QR + `vless://` + JSON
 - **10–12)** List / thu hồi / trạng thái
-- **13–14)** Gỡ Xray (không đụng AWG) / cấu hình lại dest-SNI và cổng
+- **13–14)** Gỡ Xray / cấu hình lại
+
+### Hysteria2 (15–21)
+- **15)** Cài Hysteria2 (QUIC/UDP, masquerade, Salamander OBFS mặc định bật)
+- **16–19)** Thêm / list / thu hồi / trạng thái client (`hysteria2://` + YAML + QR)
+- **20–21)** Gỡ / cấu hình lại
 
 Hoặc:
 
 ```bash
 sudo ./install_freedom.sh --install-xray
+sudo ./install_freedom.sh --install-xray --xray-domain=vpn.example.com
+sudo ./install_freedom.sh --install-hysteria
+sudo ./install_freedom.sh --install-hysteria --hy2-domain=hy2.example.com
 sudo ./install_freedom.sh --uninstall-xray
+sudo ./install_freedom.sh --uninstall-hysteria
 ```
 
-Xray dùng core chính thức: [XTLS/Xray-core](https://github.com/XTLS/Xray-core) qua [Xray-install](https://github.com/XTLS/Xray-install).
+## Stack chống kiểm duyệt
+
+| Stack | Transport | Khi nào dùng |
+|---|---|---|
+| AmneziaWG | UDP obfuscated WireGuard | Nhanh, dễ, DPI vừa |
+| VLESS REALITY Vision | TCP + TLS camouflage | Stealth tối đa, active probe |
+| VLESS REALITY XHTTP | HTTP-like request/response | Khi TCP tunnel bị bắt hành vi |
+| VLESS REALITY gRPC | HTTP/2 gRPC | Giống traffic gRPC hợp lệ |
+| CDN XHTTP/gRPC TLS | Domain + LE/self-signed sau Cloudflare | Ẩn IP VPS sau CDN |
+| Hysteria2 | QUIC/UDP + masquerade + OBFS | Tốc độ cao, mobile/lossy |
+
+Xray core: [XTLS/Xray-core](https://github.com/XTLS/Xray-core). Hysteria2: [apernet/hysteria](https://github.com/apernet/hysteria).
 
 ## Tuỳ chọn cài AmneziaWG hữu ích
 
 Trong quá trình cài (interactive), script sẽ hỏi:
 - **DNS** cho client (mặc định `1.1.1.1`, `1.0.0.1`)
-- **MTU** — tự nhận IP client đang SSH vào VM, probe path MTU tới IP đó (fallback `1.1.1.1`), rồi gợi ý (thường ~1280–1420)
+- **MTU** — tự nhận IP client đang SSH vào VM, probe path MTU tới IP đó
 - **BBR** — nếu chưa bật thì hỏi có muốn bật không (mặc định **Y**)
-
-Hoặc truyền sẵn:
 
 ```bash
 sudo ./install_freedom.sh --dns=8.8.8.8,8.8.4.4 --mtu=1420

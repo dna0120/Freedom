@@ -42,20 +42,33 @@ XRAY_COMMON_SCRIPT_URL="${XRAY_COMMON_SCRIPT_URL:-${PROJECT_RAW_BASE}/xray_commo
 XRAY_COMMON_SCRIPT_PATH="$XRAY_DIR/xray_common.sh"
 XRAY_MANAGE_SCRIPT_URL="${XRAY_MANAGE_SCRIPT_URL:-${PROJECT_RAW_BASE}/manage_xray.sh}"
 XRAY_MANAGE_SCRIPT_PATH="$XRAY_DIR/manage_xray.sh"
+HY2_DIR="/root/hysteria"
+HY2_CONFIG_FILE="$HY2_DIR/hy2setup_cfg.init"
+HY2_CLIENTS_DIR="$HY2_DIR/clients"
+HY2_SERVER_YAML="/etc/hysteria/config.yaml"
+HY2_BIN="/usr/local/bin/hysteria"
+HY2_COMMON_SCRIPT_URL="${HY2_COMMON_SCRIPT_URL:-${PROJECT_RAW_BASE}/hysteria_common.sh}"
+HY2_COMMON_SCRIPT_PATH="$HY2_DIR/hysteria_common.sh"
+HY2_MANAGE_SCRIPT_URL="${HY2_MANAGE_SCRIPT_URL:-${PROJECT_RAW_BASE}/manage_hysteria.sh}"
+HY2_MANAGE_SCRIPT_PATH="$HY2_DIR/manage_hysteria.sh"
 
 # SHA256 checksums of downloaded scripts. Updated at each release.
 # Verified in step5_download_scripts() after curl.
 # Format: sha256sum output (hex, 64 chars).
 COMMON_SCRIPT_SHA256="ca3bba0f989ab01775ad91803fb59089cb27039102b594b337bf4299d3f640b4"
 MANAGE_SCRIPT_SHA256="7d6c0a7f0a0983952e4b6a055f0553385d402cc7d017ffd91e1a4707485044d0"
-XRAY_COMMON_SCRIPT_SHA256="28d0644d9c5a00dca35c3cb3c073b57e20819e7d0177d5e042dedf3b0f86d51c"
-XRAY_MANAGE_SCRIPT_SHA256="20394392f1afeed04de90829066c20deb2292b64284dc1984529c6358ec305b8"
+XRAY_COMMON_SCRIPT_SHA256="f6225147c79b34861fa6ba401f7b379690bd2bc7f544264ce961ae4d287baa6f"
+XRAY_MANAGE_SCRIPT_SHA256="a1cd85abb8483d2432ab478f26eb1728f75a88390b437cdbd4fa09cecf978fd8"
+HY2_COMMON_SCRIPT_SHA256="949d8f4e87320b9c90c8b8db33dd93761a987fa0a20fbf94196d05a1003fd536"
+HY2_MANAGE_SCRIPT_SHA256="9276c9694445a31f9341bfa3fcc06741028d7258ce26e8aa8e6be7865825561a"
 
 # CLI flags
 UNINSTALL=0; HELP=0; HELP_EXIT_RC=0; DIAGNOSTIC=0; VERBOSE=0; NO_COLOR=0; AUTO_YES=0; NO_TWEAKS=0; NO_CPS=0
 FORCE_REINSTALL=0
 INSTALL_XRAY_ONLY=0
 UNINSTALL_XRAY=0
+INSTALL_HY2_ONLY=0
+UNINSTALL_HY2=0
 _APT_UPDATED=0
 CLI_LANG=""
 UI_LANG="${UI_LANG:-}"
@@ -68,6 +81,8 @@ CLI_MOBILE=0
 CLI_DNS=""
 CLI_MTU=""
 CLI_BBR=""
+CLI_XRAY_DOMAIN=""
+CLI_HY2_DOMAIN=""
 
 # --- Auto-cleanup of temporary files ---
 _install_temp_files=()
@@ -130,6 +145,10 @@ while [[ $# -gt 0 ]]; do
         --no-bbr)        CLI_BBR="off" ;;
         --install-xray)  INSTALL_XRAY_ONLY=1 ;;
         --uninstall-xray) UNINSTALL_XRAY=1 ;;
+        --install-hysteria|--install-hy2) INSTALL_HY2_ONLY=1 ;;
+        --uninstall-hysteria|--uninstall-hy2) UNINSTALL_HY2=1 ;;
+        --xray-domain=*) CLI_XRAY_DOMAIN="${1#*=}" ;;
+        --hy2-domain=*) CLI_HY2_DOMAIN="${1#*=}" ;;
         *) echo "Unknown argument: $1" >&2; HELP=1; HELP_EXIT_RC=1 ;;
     esac
     shift
@@ -491,21 +510,36 @@ ui_text() {
                 menu_uninstall) echo "5) Gỡ AmneziaWG" ;;
                 menu_reconfigure) echo "6) Cấu hình lại AmneziaWG" ;;
                 menu_exit) echo "7) Thoát" ;;
-                menu_xray_install) echo "8) Cài / cấu hình Xray (VLESS+REALITY)" ;;
+                menu_xray_install) echo "8) Cài / cấu hình Xray (VLESS+REALITY Vision/XHTTP/gRPC + CDN)" ;;
                 menu_xray_add) echo "9) Thêm client Xray" ;;
                 menu_xray_list) echo "10) Danh sách client Xray" ;;
                 menu_xray_revoke) echo "11) Thu hồi client Xray" ;;
                 menu_xray_status) echo "12) Trạng thái Xray" ;;
                 menu_xray_uninstall) echo "13) Gỡ Xray" ;;
                 menu_xray_reconfigure) echo "14) Cấu hình lại Xray" ;;
-                menu_tip) echo "Mẹo: 1-7 = AmneziaWG, 8-14 = Xray. Cài lại full AWG: sudo bash $0 --force" ;;
-                menu_select) echo "Chọn tùy chọn [1-14]: " ;;
+                menu_hy2_install) echo "15) Cài / cấu hình Hysteria2" ;;
+                menu_hy2_add) echo "16) Thêm client Hysteria2" ;;
+                menu_hy2_list) echo "17) Danh sách client Hysteria2" ;;
+                menu_hy2_revoke) echo "18) Thu hồi client Hysteria2" ;;
+                menu_hy2_status) echo "19) Trạng thái Hysteria2" ;;
+                menu_hy2_uninstall) echo "20) Gỡ Hysteria2" ;;
+                menu_hy2_reconfigure) echo "21) Cấu hình lại Hysteria2" ;;
+                menu_tip) echo "Mẹo: 1-7 AWG, 8-14 Xray, 15-21 Hysteria2. Cài lại full AWG: sudo bash $0 --force" ;;
+                menu_select) echo "Chọn tùy chọn [1-21]: " ;;
                 xray_proto_prompt) echo "Giao thức Xray [1]: " ;;
-                xray_proto_vision) echo "1) VLESS + REALITY + Vision (mặc định, dễ share)" ;;
+                xray_proto_vision) echo "1) VLESS + REALITY + Vision (mặc định)" ;;
                 xray_proto_xhttp) echo "2) VLESS + REALITY + XHTTP" ;;
+                xray_proto_grpc) echo "3) VLESS + REALITY + gRPC" ;;
+                xray_proto_cdn_xhttp) echo "4) CDN front: VLESS + TLS + XHTTP (cần domain)" ;;
+                xray_proto_cdn_grpc) echo "5) CDN front: VLESS + TLS + gRPC (cần domain)" ;;
                 xray_dest_prompt) echo "REALITY dest/SNI" ;;
+                xray_cdn_prompt) echo "Bật CDN/TLS front (Cloudflare-friendly domain)? [y/N]: " ;;
+                xray_domain_prompt) echo "Domain cho CDN/TLS (A record trỏ về VPS)" ;;
                 xray_not_installed) echo "Xray chưa được cài. Chọn mục 8 trước." ;;
                 xray_already) echo "Xray đã được cài." ;;
+                hy2_not_installed) echo "Hysteria2 chưa được cài. Chọn mục 15 trước." ;;
+                hy2_domain_prompt) echo "Domain cho Hysteria2 (Enter = self-signed)" ;;
+                hy2_obfs_prompt) echo "Bật Salamander OBFS? [Y/n]: " ;;
                 first_client_prompt) echo "Bây giờ bạn có thể tạo cấu hình client đầu tiên." ;;
                 add_more_hint) echo "Muốn thêm client nữa thì chỉ cần chạy lại script này!" ;;
                 client_cfg_title) echo "Cấu hình client" ;;
@@ -559,21 +593,36 @@ ui_text() {
                 menu_uninstall) echo "5) Uninstall AmneziaWG" ;;
                 menu_reconfigure) echo "6) Reconfigure AmneziaWG" ;;
                 menu_exit) echo "7) Exit" ;;
-                menu_xray_install) echo "8) Install / configure Xray (VLESS+REALITY)" ;;
+                menu_xray_install) echo "8) Install / configure Xray (VLESS+REALITY Vision/XHTTP/gRPC + CDN)" ;;
                 menu_xray_add) echo "9) Add Xray client" ;;
                 menu_xray_list) echo "10) List Xray clients" ;;
                 menu_xray_revoke) echo "11) Revoke Xray client" ;;
                 menu_xray_status) echo "12) Show Xray status" ;;
                 menu_xray_uninstall) echo "13) Uninstall Xray" ;;
                 menu_xray_reconfigure) echo "14) Reconfigure Xray" ;;
-                menu_tip) echo "Tip: 1-7 = AmneziaWG, 8-14 = Xray. Full AWG reinstall: sudo bash $0 --force" ;;
-                menu_select) echo "Select an option [1-14]: " ;;
+                menu_hy2_install) echo "15) Install / configure Hysteria2" ;;
+                menu_hy2_add) echo "16) Add Hysteria2 client" ;;
+                menu_hy2_list) echo "17) List Hysteria2 clients" ;;
+                menu_hy2_revoke) echo "18) Revoke Hysteria2 client" ;;
+                menu_hy2_status) echo "19) Show Hysteria2 status" ;;
+                menu_hy2_uninstall) echo "20) Uninstall Hysteria2" ;;
+                menu_hy2_reconfigure) echo "21) Reconfigure Hysteria2" ;;
+                menu_tip) echo "Tip: 1-7 AWG, 8-14 Xray, 15-21 Hysteria2. Full AWG reinstall: sudo bash $0 --force" ;;
+                menu_select) echo "Select an option [1-21]: " ;;
                 xray_proto_prompt) echo "Xray protocol [1]: " ;;
-                xray_proto_vision) echo "1) VLESS + REALITY + Vision (default, easiest share)" ;;
+                xray_proto_vision) echo "1) VLESS + REALITY + Vision (default)" ;;
                 xray_proto_xhttp) echo "2) VLESS + REALITY + XHTTP" ;;
+                xray_proto_grpc) echo "3) VLESS + REALITY + gRPC" ;;
+                xray_proto_cdn_xhttp) echo "4) CDN front: VLESS + TLS + XHTTP (needs domain)" ;;
+                xray_proto_cdn_grpc) echo "5) CDN front: VLESS + TLS + gRPC (needs domain)" ;;
                 xray_dest_prompt) echo "REALITY dest/SNI" ;;
+                xray_cdn_prompt) echo "Enable CDN/TLS front (Cloudflare-friendly domain)? [y/N]: " ;;
+                xray_domain_prompt) echo "Domain for CDN/TLS (A record to this VPS)" ;;
                 xray_not_installed) echo "Xray is not installed. Choose option 8 first." ;;
                 xray_already) echo "Xray is already installed." ;;
+                hy2_not_installed) echo "Hysteria2 is not installed. Choose option 15 first." ;;
+                hy2_domain_prompt) echo "Domain for Hysteria2 (Enter = self-signed)" ;;
+                hy2_obfs_prompt) echo "Enable Salamander OBFS? [Y/n]: " ;;
                 first_client_prompt) echo "You can now generate a client configuration." ;;
                 add_more_hint) echo "If you want to add more clients, simply run this script again!" ;;
                 client_cfg_title) echo "Client configuration" ;;
@@ -777,8 +826,12 @@ Script cài đặt và cấu hình AmneziaWG 2.0 cho Ubuntu (24.04 / 25.10 / 26.
 Tùy chọn:
   -h, --help            Hiện trợ giúp và thoát
   --uninstall           Gỡ AmneziaWG và toàn bộ cấu hình
-  --install-xray        Cài / cấu hình Xray (VLESS+REALITY), không đụng AWG
+  --install-xray        Cài / cấu hình Xray (VLESS+REALITY Vision/XHTTP/gRPC + CDN)
   --uninstall-xray      Gỡ Xray (không đụng AmneziaWG)
+  --install-hysteria    Cài Hysteria2 (QUIC/UDP + Salamander OBFS)
+  --uninstall-hysteria  Gỡ Hysteria2
+  --xray-domain=FQDN    Bật CDN/TLS front cho Xray với domain này
+  --hy2-domain=FQDN     Domain/ACME cho Hysteria2 (không có = self-signed)
   --diagnostic          Tạo báo cáo chẩn đoán và thoát
   -v, --verbose         Bật log chi tiết
   --no-color            Tắt màu terminal
@@ -816,10 +869,12 @@ Ví dụ:
   sudo bash install_freedom.sh --uninstall
   sudo bash install_freedom.sh --install-xray
   sudo bash install_freedom.sh --uninstall-xray
+  sudo bash install_freedom.sh --install-hysteria
+  sudo bash install_freedom.sh --uninstall-hysteria
   sudo bash install_freedom.sh --diagnostic
 
 Sau khi cài, chạy lại script để mở menu quản lý:
-  1-7 AmneziaWG   8-14 Xray
+  1-7 AmneziaWG   8-14 Xray   15-21 Hysteria2
 
 Repository: ${PROJECT_REPO_URL}
 EOF
@@ -831,8 +886,12 @@ Script for installation and configuration of AmneziaWG 2.0 on Ubuntu (24.04 / 25
 Options:
   -h, --help            Show this help and exit
   --uninstall           Uninstall AmneziaWG and all its configurations
-  --install-xray        Install / configure Xray (VLESS+REALITY), leave AWG intact
+  --install-xray        Install / configure Xray (VLESS+REALITY Vision/XHTTP/gRPC + CDN)
   --uninstall-xray      Uninstall Xray only (leave AmneziaWG intact)
+  --install-hysteria    Install Hysteria2 (QUIC/UDP + Salamander OBFS)
+  --uninstall-hysteria  Uninstall Hysteria2 only
+  --xray-domain=FQDN    Enable Xray CDN/TLS front with this domain
+  --hy2-domain=FQDN     Domain/ACME for Hysteria2 (omit = self-signed)
   --diagnostic          Generate diagnostic report and exit
   -v, --verbose         Verbose output for debugging (including DEBUG)
   --no-color            Disable colored terminal output
@@ -883,10 +942,12 @@ Examples:
   sudo bash install_freedom.sh --uninstall                 # Uninstall
   sudo bash install_freedom.sh --install-xray              # Install Xray beside AWG
   sudo bash install_freedom.sh --uninstall-xray            # Uninstall Xray only
+  sudo bash install_freedom.sh --install-hysteria          # Install Hysteria2
+  sudo bash install_freedom.sh --uninstall-hysteria        # Uninstall Hysteria2 only
   sudo bash install_freedom.sh --diagnostic                # Diagnostics
 
 After installation, re-run this script (no flags) to open a management menu:
-  1-7 AmneziaWG   8-14 Xray
+  1-7 AmneziaWG   8-14 Xray   15-21 Hysteria2
   Same UX style as angristan/wireguard-install.
 
 Repository: ${PROJECT_REPO_URL}
@@ -4304,7 +4365,7 @@ install_xray_core() {
 
 step_install_xray() {
     if [ "$(id -u)" -ne 0 ]; then die "Run the script as root (sudo bash $0)."; fi
-    log "### XRAY INSTALL (VLESS + REALITY Vision/XHTTP) ###"
+    log "### XRAY INSTALL (VLESS + REALITY Vision/XHTTP/gRPC + optional CDN) ###"
     mkdir -p "$XRAY_DIR" "$XRAY_CLIENTS_DIR" || die "Cannot create $XRAY_DIR"
     chmod 700 "$XRAY_DIR" "$XRAY_CLIENTS_DIR"
     xray_seed_scripts_from_installer_dir
@@ -4316,7 +4377,7 @@ step_install_xray() {
 
     install_xray_core
 
-    local vision_port xhttp_port dest sni input_dest=""
+    local vision_port xhttp_port grpc_port dest sni input_dest="" cdn_ans="" domain=""
     if [[ -f "$XRAY_CONFIG_FILE" ]]; then
         xray_load_config || true
     fi
@@ -4330,18 +4391,27 @@ step_install_xray() {
         xhttp_port="$(xray_pick_free_tcp_port "$vision_port")" || die "Could not pick a free TCP port for XHTTP"
     else
         xhttp_port="$XRAY_XHTTP_PORT"
-        if [[ "$xhttp_port" == "$vision_port" ]]; then
-            xhttp_port="$(xray_pick_free_tcp_port "$vision_port")" || die "Could not pick a free TCP port for XHTTP"
+        [[ "$xhttp_port" != "$vision_port" ]] || xhttp_port="$(xray_pick_free_tcp_port "$vision_port")" \
+            || die "Could not pick a free TCP port for XHTTP"
+    fi
+    if [[ -z "${XRAY_GRPC_PORT:-}" ]] || ! [[ "${XRAY_GRPC_PORT}" =~ ^[0-9]+$ ]]; then
+        grpc_port="$(xray_pick_free_tcp_port "$vision_port" "$xhttp_port")" || die "Could not pick a free TCP port for gRPC"
+    else
+        grpc_port="$XRAY_GRPC_PORT"
+        if [[ "$grpc_port" == "$vision_port" || "$grpc_port" == "$xhttp_port" ]]; then
+            grpc_port="$(xray_pick_free_tcp_port "$vision_port" "$xhttp_port")" || die "Could not pick a free TCP port for gRPC"
         fi
     fi
     XRAY_VISION_PORT="$vision_port"
     XRAY_XHTTP_PORT="$xhttp_port"
+    XRAY_GRPC_PORT="$grpc_port"
 
     if [[ -z "${XRAY_PRIVATE_KEY:-}" || -z "${XRAY_PUBLIC_KEY:-}" ]]; then
         xray_generate_keys || die "Failed to generate REALITY x25519 keys"
     fi
     [[ -n "${XRAY_SHORT_ID:-}" ]] || XRAY_SHORT_ID="$(xray_generate_short_id)"
     [[ -n "${XRAY_XHTTP_PATH:-}" ]] || XRAY_XHTTP_PATH="$(xray_generate_path)"
+    [[ -n "${XRAY_GRPC_SERVICE:-}" ]] || XRAY_GRPC_SERVICE="$(xray_generate_service_name)"
 
     log "Probing REALITY dest (TLS 1.3 + HTTP/2, not Cloudflare)..."
     dest="$(xray_pick_dest)"
@@ -4359,13 +4429,50 @@ step_install_xray() {
     XRAY_SNI="$sni"
     XRAY_ENDPOINT="$(xray_get_public_ip 2>/dev/null || true)"
 
+    XRAY_CDN_ENABLED="${XRAY_CDN_ENABLED:-0}"
+    domain="${CLI_XRAY_DOMAIN:-${XRAY_DOMAIN:-}}"
+    if [[ -n "$domain" ]]; then
+        XRAY_CDN_ENABLED=1
+    elif [[ "${AUTO_YES:-0}" -eq 0 ]]; then
+        read -rp "$(ui_text xray_cdn_prompt)" cdn_ans < /dev/tty
+        if [[ "$cdn_ans" =~ ^[[:space:]]*[Yy]([Ee][Ss])?[[:space:]]*$ ]]; then
+            XRAY_CDN_ENABLED=1
+            read -rp "$(ui_text xray_domain_prompt): " domain < /dev/tty
+        fi
+    fi
+    if [[ "$XRAY_CDN_ENABLED" -eq 1 ]]; then
+        [[ -n "$domain" ]] || die "CDN/TLS mode requires a domain (--xray-domain= or interactive)."
+        XRAY_DOMAIN="$domain"
+        if [[ -z "${XRAY_CDN_PORT:-}" ]] || ! [[ "${XRAY_CDN_PORT}" =~ ^[0-9]+$ ]]; then
+            if xray_tcp_port_free 443; then
+                XRAY_CDN_PORT=443
+            else
+                XRAY_CDN_PORT="$(xray_pick_free_tcp_port "$vision_port" "$xhttp_port")" \
+                    || die "Could not pick CDN TCP port"
+            fi
+        fi
+        xray_issue_tls_cert "$XRAY_DOMAIN" || die "Failed to issue TLS certificate for $XRAY_DOMAIN"
+        log "CDN/TLS front enabled for ${XRAY_DOMAIN} (XHTTP :${XRAY_CDN_PORT}, gRPC :$((XRAY_CDN_PORT+1)))."
+        log "Cloudflare tip: orange-cloud A record → this VPS; SSL mode Full (or Full Strict with LE cert)."
+    else
+        XRAY_CDN_ENABLED=0
+        XRAY_DOMAIN=""
+        XRAY_CDN_PORT=""
+        XRAY_TLS_CERT=""
+        XRAY_TLS_KEY=""
+    fi
+
     xray_save_config || die "Failed to save $XRAY_CONFIG_FILE"
     xray_apply_config || die "Failed to write/start Xray config"
     xray_maybe_open_ufw
     log "Xray installed."
     log "  Vision TCP: ${XRAY_VISION_PORT}"
     log "  XHTTP  TCP: ${XRAY_XHTTP_PORT}"
+    log "  gRPC   TCP: ${XRAY_GRPC_PORT}"
     log "  REALITY dest/SNI: ${XRAY_SNI}"
+    if [[ "$XRAY_CDN_ENABLED" -eq 1 ]]; then
+        log "  CDN domain: ${XRAY_DOMAIN} (XHTTP :${XRAY_CDN_PORT}, gRPC :$((XRAY_CDN_PORT+1)))"
+    fi
     log "Manage: sudo bash $0  → options 9-14"
 }
 
@@ -4440,9 +4547,15 @@ menu_xray_add_client() {
     echo ""
     echo "$(ui_text xray_proto_vision)"
     echo "$(ui_text xray_proto_xhttp)"
+    echo "$(ui_text xray_proto_grpc)"
+    echo "$(ui_text xray_proto_cdn_xhttp)"
+    echo "$(ui_text xray_proto_cdn_grpc)"
     read -rp "$(ui_text xray_proto_prompt)" proto_pick < /dev/tty
     case "$proto_pick" in
         2|xhttp|XHTTP) proto="xhttp" ;;
+        3|grpc|GRPC) proto="grpc" ;;
+        4|cdn-xhttp) proto="cdn-xhttp" ;;
+        5|cdn-grpc) proto="cdn-grpc" ;;
         *) proto="vision" ;;
     esac
     echo "$(ui_text client_name_rule1)"
@@ -4526,6 +4639,264 @@ menu_xray_show_status() {
     fi
     echo ""
     run_manage_xray status || true
+}
+
+# ==============================================================================
+# Hysteria2 — parallel UDP/QUIC stack
+# ==============================================================================
+
+hy2_stack_ready() {
+    [[ -x "$HY2_BIN" && -f "$HY2_SERVER_YAML" && -f "$HY2_CONFIG_FILE" ]]
+}
+
+ensure_hy2_scripts() {
+    mkdir -p "$HY2_DIR" || die "Cannot create $HY2_DIR"
+    chmod 700 "$HY2_DIR" 2>/dev/null || true
+    if [[ -f "$HY2_COMMON_SCRIPT_PATH" && -f "$HY2_MANAGE_SCRIPT_PATH" ]]; then
+        return 0
+    fi
+    log_warn "Hysteria2 management scripts missing under $HY2_DIR — downloading..."
+    [[ ! -f "$HY2_COMMON_SCRIPT_PATH" ]] && \
+        _secure_download "$HY2_COMMON_SCRIPT_URL" "$HY2_COMMON_SCRIPT_PATH" \
+            "$HY2_COMMON_SCRIPT_SHA256" "hysteria_common.sh"
+    [[ ! -f "$HY2_MANAGE_SCRIPT_PATH" ]] && \
+        _secure_download "$HY2_MANAGE_SCRIPT_URL" "$HY2_MANAGE_SCRIPT_PATH" \
+            "$HY2_MANAGE_SCRIPT_SHA256" "manage_hysteria.sh"
+}
+
+hy2_seed_scripts_from_installer_dir() {
+    local src_dir
+    src_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    mkdir -p "$HY2_DIR" || return 1
+    if [[ -f "$src_dir/hysteria_common.sh" ]]; then
+        cp -f "$src_dir/hysteria_common.sh" "$HY2_COMMON_SCRIPT_PATH"
+        chmod 700 "$HY2_COMMON_SCRIPT_PATH"
+    fi
+    if [[ -f "$src_dir/manage_hysteria.sh" ]]; then
+        cp -f "$src_dir/manage_hysteria.sh" "$HY2_MANAGE_SCRIPT_PATH"
+        chmod 700 "$HY2_MANAGE_SCRIPT_PATH"
+    fi
+}
+
+run_manage_hy2() {
+    ensure_hy2_scripts
+    bash "$HY2_MANAGE_SCRIPT_PATH" "$@"
+}
+
+install_hy2_core() {
+    if [[ -x "$HY2_BIN" ]]; then
+        log "Hysteria2 already present: $("$HY2_BIN" version 2>/dev/null | head -n1)"
+        return 0
+    fi
+    log "Installing Hysteria2 via official get.hy2.sh..."
+    HYSTERIA_USER=root bash <(curl -fsSL https://get.hy2.sh/) \
+        || die "Official Hysteria2 install failed."
+    [[ -x "$HY2_BIN" ]] || die "hysteria binary missing after install ($HY2_BIN)"
+    install_packages qrencode openssl 2>/dev/null || true
+}
+
+step_install_hy2() {
+    if [ "$(id -u)" -ne 0 ]; then die "Run the script as root (sudo bash $0)."; fi
+    log "### HYSTERIA2 INSTALL ###"
+    mkdir -p "$HY2_DIR" "$HY2_CLIENTS_DIR" || die "Cannot create $HY2_DIR"
+    chmod 700 "$HY2_DIR" "$HY2_CLIENTS_DIR"
+    hy2_seed_scripts_from_installer_dir
+    if [[ ! -f "$HY2_COMMON_SCRIPT_PATH" ]]; then
+        ensure_hy2_scripts
+    fi
+    # shellcheck source=/dev/null
+    source "$HY2_COMMON_SCRIPT_PATH"
+
+    install_hy2_core
+
+    local port domain="" obfs_ans="" 
+    if [[ -f "$HY2_CONFIG_FILE" ]]; then
+        hy2_load_config || true
+    fi
+    if [[ -z "${HY2_PORT:-}" ]] || ! [[ "${HY2_PORT}" =~ ^[0-9]+$ ]]; then
+        port="$(hy2_pick_free_udp_port)" || die "Could not pick a free UDP port for Hysteria2"
+    else
+        port="$HY2_PORT"
+    fi
+    HY2_PORT="$port"
+    domain="${CLI_HY2_DOMAIN:-${HY2_DOMAIN:-}}"
+    if [[ "${AUTO_YES:-0}" -eq 0 && -z "$domain" ]]; then
+        read -rp "$(ui_text hy2_domain_prompt): " domain < /dev/tty
+    fi
+    hy2_issue_acme_or_self "$domain" || die "Failed to prepare TLS for Hysteria2"
+    if [[ -z "${HY2_OBFS:-}" ]]; then
+        if [[ "${AUTO_YES:-0}" -eq 1 ]]; then
+            HY2_OBFS="$(hy2_rand_password | tr -d '\n')"
+        else
+            read -rp "$(ui_text hy2_obfs_prompt)" obfs_ans < /dev/tty
+            if [[ ! "$obfs_ans" =~ ^[[:space:]]*[Nn][Oo]?[[:space:]]*$ ]]; then
+                HY2_OBFS="$(hy2_rand_password | tr -d '\n')"
+            else
+                HY2_OBFS=""
+            fi
+        fi
+    fi
+    HY2_MASQUERADE="${HY2_MASQUERADE:-https://www.microsoft.com/}"
+    HY2_ENDPOINT="$(hy2_get_public_ip 2>/dev/null || true)"
+
+    hy2_save_config || die "Failed to save $HY2_CONFIG_FILE"
+    hy2_apply_config || die "Failed to write/start Hysteria2"
+    hy2_maybe_open_ufw
+    log "Hysteria2 installed."
+    log "  UDP port: ${HY2_PORT}"
+    log "  SNI: ${HY2_SNI}"
+    log "  Insecure: ${HY2_INSECURE}"
+    log "  OBFS: $( [[ -n ${HY2_OBFS:-} ]] && echo salamander || echo off )"
+    log "Manage: sudo bash $0  → options 16-21"
+}
+
+step_uninstall_hy2() {
+    if [ "$(id -u)" -ne 0 ]; then die "Run the script as root (sudo bash $0)."; fi
+    log "### HYSTERIA2 UNINSTALL ###"
+    echo ""
+    echo "WARNING! This removes Hysteria2 and /root/hysteria only."
+    echo "AmneziaWG / Xray are left untouched."
+    echo ""
+    local confirm=""
+    if [[ "${AUTO_YES:-0}" -eq 0 ]]; then
+        read -rp "Uninstall Hysteria2? (type 'yes'): " confirm < /dev/tty
+        if [[ ! "$confirm" =~ ^[[:space:]]*[Yy][Ee][Ss][[:space:]]*$ ]]; then
+            log "Hysteria2 uninstall cancelled."
+            return 0
+        fi
+    fi
+    if [[ -f "$HY2_COMMON_SCRIPT_PATH" ]]; then
+        # shellcheck source=/dev/null
+        source "$HY2_COMMON_SCRIPT_PATH" 2>/dev/null || true
+        hy2_load_config 2>/dev/null || true
+        hy2_maybe_close_ufw
+    fi
+    systemctl stop hysteria-server 2>/dev/null || true
+    systemctl disable hysteria-server 2>/dev/null || true
+    if curl -fsSL https://get.hy2.sh/ >/tmp/hy2-install.sh 2>/dev/null; then
+        bash /tmp/hy2-install.sh --remove >/dev/null 2>&1 || true
+        rm -f /tmp/hy2-install.sh
+    fi
+    rm -rf "$HY2_DIR" /etc/hysteria 2>/dev/null || true
+    log "=== HYSTERIA2 UNINSTALL COMPLETED ==="
+}
+
+step_reconfigure_hy2() {
+    if ! hy2_stack_ready; then
+        echo "$(ui_text hy2_not_installed)"
+        return 1
+    fi
+    # shellcheck source=/dev/null
+    source "$HY2_COMMON_SCRIPT_PATH"
+    hy2_load_config || die "Cannot load $HY2_CONFIG_FILE"
+    local input_port="" input_domain=""
+    echo ""
+    log "Reconfigure Hysteria2 (Enter = keep current value)."
+    if [[ "${AUTO_YES:-0}" -eq 0 ]]; then
+        read -rp "UDP port [${HY2_PORT}]: " input_port < /dev/tty
+        [[ -n "$input_port" ]] && HY2_PORT="$input_port"
+        read -rp "$(ui_text hy2_domain_prompt) [${HY2_DOMAIN:-none}]: " input_domain < /dev/tty
+        if [[ -n "$input_domain" ]]; then
+            hy2_issue_acme_or_self "$input_domain" || die "TLS setup failed"
+        fi
+    fi
+    hy2_save_config || die "Failed to save Hysteria2 config"
+    hy2_apply_config || die "Failed to apply Hysteria2 config"
+    hy2_maybe_open_ufw
+    log "Hysteria2 reconfigured."
+}
+
+menu_hy2_add_client() {
+    if ! hy2_stack_ready; then
+        echo "$(ui_text hy2_not_installed)"
+        return 0
+    fi
+    ensure_hy2_scripts
+    local CLIENT_NAME="" CLIENT_EXISTS=1
+    echo ""
+    echo "$(ui_text client_cfg_title) (Hysteria2)"
+    echo ""
+    echo "$(ui_text client_name_rule1)"
+    echo "$(ui_text client_name_rule2)"
+    until [[ ${CLIENT_NAME} =~ ^[a-zA-Z0-9_-]+$ && ${CLIENT_EXISTS} == '0' && ${#CLIENT_NAME} -lt 16 ]]; do
+        read -rp "$(ui_text client_name_prompt)" -e CLIENT_NAME < /dev/tty
+        if [[ -z "$CLIENT_NAME" ]]; then
+            echo "$(ui_text client_name_empty)"
+            CLIENT_EXISTS=1
+            continue
+        fi
+        if [[ -f "$HY2_CLIENTS_DIR/${CLIENT_NAME}.meta" ]]; then
+            CLIENT_EXISTS=1
+            echo ""
+            echo -e "\033[0;33m$(ui_text client_name_exists)\033[0m"
+            echo ""
+        else
+            CLIENT_EXISTS=0
+        fi
+    done
+    echo ""
+    run_manage_hy2 --yes add "$CLIENT_NAME"
+}
+
+menu_hy2_list_clients() {
+    if ! hy2_stack_ready; then
+        echo "$(ui_text hy2_not_installed)"
+        return 0
+    fi
+    echo ""
+    run_manage_hy2 list
+}
+
+menu_hy2_revoke_client() {
+    if ! hy2_stack_ready; then
+        echo "$(ui_text hy2_not_installed)"
+        return 0
+    fi
+    local NUMBER_OF_CLIENTS=0 CLIENT_NUMBER="" CLIENT_NAME names=()
+    shopt -s nullglob
+    for f in "$HY2_CLIENTS_DIR"/*.meta; do
+        names+=("$(basename "$f" .meta)")
+    done
+    shopt -u nullglob
+    NUMBER_OF_CLIENTS=${#names[@]}
+    if [[ ${NUMBER_OF_CLIENTS} -eq 0 ]]; then
+        echo ""
+        echo "$(ui_text no_clients)"
+        return 0
+    fi
+    echo ""
+    echo "$(ui_text select_revoke)"
+    local i
+    for i in "${!names[@]}"; do
+        printf '%s) %s\n' "$((i+1))" "${names[$i]}"
+    done
+    until [[ ${CLIENT_NUMBER} =~ ^[0-9]+$ && ${CLIENT_NUMBER} -ge 1 && ${CLIENT_NUMBER} -le ${NUMBER_OF_CLIENTS} ]]; do
+        if [[ ${NUMBER_OF_CLIENTS} -eq 1 ]]; then
+            read -rp "$(ui_text select_one_1)" CLIENT_NUMBER < /dev/tty
+        else
+            printf -v _sel_prompt "$(ui_text select_one_n)" "${NUMBER_OF_CLIENTS}"
+            read -rp "$_sel_prompt" CLIENT_NUMBER < /dev/tty
+        fi
+    done
+    CLIENT_NAME="${names[$((CLIENT_NUMBER-1))]}"
+    echo ""
+    printf "$(ui_text revoking)\n" "$CLIENT_NAME"
+    if run_manage_hy2 --yes remove "$CLIENT_NAME"; then
+        printf -v _revoked_ok "$(ui_text revoked_ok)" "$CLIENT_NAME"
+        echo -e "\033[0;32m${_revoked_ok}\033[0m"
+    else
+        printf -v _revoked_fail "$(ui_text revoked_fail)" "$CLIENT_NAME"
+        echo -e "\033[0;31m${_revoked_fail}\033[0m"
+    fi
+}
+
+menu_hy2_show_status() {
+    if ! hy2_stack_ready; then
+        echo "$(ui_text hy2_not_installed)"
+        return 0
+    fi
+    echo ""
+    run_manage_hy2 status || true
 }
 
 # ==============================================================================
@@ -4846,6 +5217,11 @@ manageMenu() {
     elif [[ -f "$XRAY_CONFIG_FILE" ]]; then
         echo -e "Xray: \033[0;33mNOT running\033[0m"
     fi
+    if systemctl is-active --quiet hysteria-server 2>/dev/null; then
+        echo -e "Hysteria2: \033[0;32mrunning\033[0m"
+    elif [[ -f "$HY2_CONFIG_FILE" ]]; then
+        echo -e "Hysteria2: \033[0;33mNOT running\033[0m"
+    fi
     echo ""
     echo "$(ui_text menu_what)"
     echo "   $(ui_text menu_add)"
@@ -4862,9 +5238,16 @@ manageMenu() {
     echo "   $(ui_text menu_xray_status)"
     echo "   $(ui_text menu_xray_uninstall)"
     echo "   $(ui_text menu_xray_reconfigure)"
+    echo "   $(ui_text menu_hy2_install)"
+    echo "   $(ui_text menu_hy2_add)"
+    echo "   $(ui_text menu_hy2_list)"
+    echo "   $(ui_text menu_hy2_revoke)"
+    echo "   $(ui_text menu_hy2_status)"
+    echo "   $(ui_text menu_hy2_uninstall)"
+    echo "   $(ui_text menu_hy2_reconfigure)"
     echo ""
     echo "$(ui_text menu_tip)"
-    until [[ ${MENU_OPTION} =~ ^([1-9]|1[0-4])$ ]]; do
+    until [[ ${MENU_OPTION} =~ ^([1-9]|1[0-9]|2[01])$ ]]; do
         read -rp "$(ui_text menu_select)" MENU_OPTION < /dev/tty
     done
     case "${MENU_OPTION}" in
@@ -4885,13 +5268,21 @@ manageMenu() {
     12) menu_xray_show_status ;;
     13) step_uninstall_xray ;;
     14) step_reconfigure_xray ;;
+    15) step_install_hy2 ;;
+    16) menu_hy2_add_client ;;
+    17) menu_hy2_list_clients ;;
+    18) menu_hy2_revoke_client ;;
+    19) menu_hy2_show_status ;;
+    20) step_uninstall_hy2 ;;
+    21) step_reconfigure_hy2 ;;
     esac
 }
 
 should_open_manage_menu() {
     [[ "$FORCE_REINSTALL" -eq 1 ]] && return 1
     [[ "$INSTALL_XRAY_ONLY" -eq 1 ]] && return 1
-    local awg_ok=0 xray_ok=0
+    [[ "$INSTALL_HY2_ONLY" -eq 1 ]] && return 1
+    local awg_ok=0 xray_ok=0 hy2_ok=0
     if [[ -f "$SERVER_CONF_FILE" ]]; then
         if [[ -f "$STATE_FILE" ]]; then
             local _saved_step
@@ -4904,7 +5295,8 @@ should_open_manage_menu() {
         awg_ok=1
     fi
     [[ -f "$XRAY_CONFIG_FILE" && -f "$XRAY_CONF_JSON" ]] && xray_ok=1
-    (( awg_ok == 1 || xray_ok == 1 ))
+    [[ -f "$HY2_CONFIG_FILE" && -f "$HY2_SERVER_YAML" ]] && hy2_ok=1
+    (( awg_ok == 1 || xray_ok == 1 || hy2_ok == 1 ))
 }
 
 # ==============================================================================
@@ -4915,9 +5307,15 @@ select_ui_language
 if [[ "$HELP" -eq 1 ]]; then show_help; fi
 if [[ "$UNINSTALL" -eq 1 ]]; then step_uninstall; fi
 if [[ "$UNINSTALL_XRAY" -eq 1 ]]; then step_uninstall_xray; exit 0; fi
+if [[ "$UNINSTALL_HY2" -eq 1 ]]; then step_uninstall_hy2; exit 0; fi
 if [[ "$INSTALL_XRAY_ONLY" -eq 1 ]]; then
     if [ "$(id -u)" -ne 0 ]; then die "Run the script as root (sudo bash $0)."; fi
     step_install_xray
+    exit 0
+fi
+if [[ "$INSTALL_HY2_ONLY" -eq 1 ]]; then
+    if [ "$(id -u)" -ne 0 ]; then die "Run the script as root (sudo bash $0)."; fi
+    step_install_hy2
     exit 0
 fi
 if [[ "$DIAGNOSTIC" -eq 1 ]]; then create_diagnostic_report; exit 0; fi
