@@ -1303,6 +1303,33 @@ install_packages() {
     log "Packages installed."
 }
 
+# Best-effort package install for the Xray / Hysteria2 stacks, which can be
+# selected without the AmneziaWG steps that normally prime apt. Unlike
+# install_packages it never calls die — callers decide what is fatal.
+ensure_base_tools() {
+    local pkgs=("$@") missing=() pkg
+    [[ ${#pkgs[@]} -eq 0 ]] && return 0
+    for pkg in "${pkgs[@]}"; do
+        if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "ok installed"; then
+            missing+=("$pkg")
+        fi
+    done
+    [[ ${#missing[@]} -eq 0 ]] && return 0
+    log "Installing prerequisites: ${missing[*]}..."
+    if [[ "${_APT_UPDATED:-0}" -eq 0 ]]; then
+        if apt_update_tolerant; then
+            _APT_UPDATED=1
+        else
+            log_warn "apt update failed — trying to install anyway."
+        fi
+    fi
+    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y "${missing[@]}"; then
+        log_warn "Could not install: ${missing[*]}"
+        return 1
+    fi
+    return 0
+}
+
 cleanup_apt() {
     log "Cleaning apt..."
     apt-get clean || log_warn "apt-get clean error"
@@ -4401,10 +4428,10 @@ ensure_xray_scripts() {
     fi
     log_warn "Xray management scripts missing under $XRAY_DIR — downloading..."
     [[ ! -f "$XRAY_COMMON_SCRIPT_PATH" ]] && \
-        _secure_download "$XRAY_COMMON_SCRIPT_URL" "$XRAY_COMMON_SCRIPT_PATH" \
+        _secure_download_strict "$XRAY_COMMON_SCRIPT_URL" "$XRAY_COMMON_SCRIPT_PATH" \
             "$XRAY_COMMON_SCRIPT_SHA256" "xray_common.sh"
     [[ ! -f "$XRAY_MANAGE_SCRIPT_PATH" ]] && \
-        _secure_download "$XRAY_MANAGE_SCRIPT_URL" "$XRAY_MANAGE_SCRIPT_PATH" \
+        _secure_download_strict "$XRAY_MANAGE_SCRIPT_URL" "$XRAY_MANAGE_SCRIPT_PATH" \
             "$XRAY_MANAGE_SCRIPT_SHA256" "manage_xray.sh"
 }
 
@@ -4428,16 +4455,90 @@ run_manage_xray() {
     bash "$XRAY_MANAGE_SCRIPT_PATH" "$@"
 }
 
+_unzip_to() {
+    local zip="$1" dest="$2"
+    if command -v unzip >/dev/null 2>&1; then
+        unzip -o "$zip" -d "$dest" >/dev/null && return 0
+    fi
+    if command -v bsdtar >/dev/null 2>&1; then
+        bsdtar -xf "$zip" -C "$dest" && return 0
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -c 'import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' \
+            "$zip" "$dest" && return 0
+    fi
+    return 1
+}
+
+# Fallback when the official Xray-install script cannot run (missing unzip,
+# blocked mirrors...): fetch the release zip and lay out the same paths/unit.
+install_xray_core_manual() {
+    local arch asset tmp zip
+    case "$(uname -m)" in
+        x86_64|amd64)   arch="64" ;;
+        aarch64|arm64)  arch="arm64-v8a" ;;
+        armv7l|armv7)   arch="arm32-v7a" ;;
+        s390x)          arch="s390x" ;;
+        *) log_error "Unsupported architecture: $(uname -m)"; return 1 ;;
+    esac
+    asset="Xray-linux-${arch}.zip"
+    tmp="$(mktemp -d)" || return 1
+    zip="$tmp/$asset"
+    log "Manual install: downloading $asset from GitHub releases..."
+    if ! curl -fLso "$zip" --max-time 180 --retry 2 \
+        "https://github.com/XTLS/Xray-core/releases/latest/download/$asset"; then
+        rm -rf "$tmp"; log_error "Could not download $asset"; return 1
+    fi
+    if ! _unzip_to "$zip" "$tmp"; then
+        rm -rf "$tmp"
+        log_error "No usable extractor found (unzip / bsdtar / python3)."
+        return 1
+    fi
+    install -m 755 "$tmp/xray" "$XRAY_BIN" || { rm -rf "$tmp"; return 1; }
+    mkdir -p /usr/local/share/xray /usr/local/etc/xray /var/log/xray
+    [[ -f "$tmp/geoip.dat" ]]   && install -m 644 "$tmp/geoip.dat"   /usr/local/share/xray/
+    [[ -f "$tmp/geosite.dat" ]] && install -m 644 "$tmp/geosite.dat" /usr/local/share/xray/
+    rm -rf "$tmp"
+    cat >/etc/systemd/system/xray.service <<'EOF'
+[Unit]
+Description=Xray Service
+Documentation=https://github.com/XTLS/Xray-core
+After=network.target nss-lookup.target
+
+[Service]
+User=root
+ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/config.json
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=1000000
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload || true
+    log "Xray installed manually: $("$XRAY_BIN" version 2>/dev/null | head -n1)"
+    return 0
+}
+
 install_xray_core() {
     if [[ -x "$XRAY_BIN" ]]; then
         log "Xray core already present: $("$XRAY_BIN" version 2>/dev/null | head -n1)"
         return 0
     fi
-    log "Installing Xray-core via official Xray-install..."
-    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install \
-        || die "Official Xray-install failed."
+    # The Xray-only path skips the AmneziaWG steps, so the box may lack the
+    # tools the official installer assumes (notably unzip).
+    ensure_base_tools ca-certificates curl unzip openssl qrencode || true
+    if command -v unzip >/dev/null 2>&1; then
+        log "Installing Xray-core via official Xray-install..."
+        bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install \
+            || log_warn "Official Xray-install failed — falling back to a manual install."
+    else
+        log_warn "unzip is not available — using the manual Xray install."
+    fi
+    if [[ ! -x "$XRAY_BIN" ]]; then
+        install_xray_core_manual || die "Xray-core installation failed."
+    fi
     [[ -x "$XRAY_BIN" ]] || die "xray binary missing after install ($XRAY_BIN)"
-    install_packages qrencode openssl 2>/dev/null || true
 }
 
 step_install_xray() {
@@ -4734,10 +4835,10 @@ ensure_hy2_scripts() {
     fi
     log_warn "Hysteria2 management scripts missing under $HY2_DIR — downloading..."
     [[ ! -f "$HY2_COMMON_SCRIPT_PATH" ]] && \
-        _secure_download "$HY2_COMMON_SCRIPT_URL" "$HY2_COMMON_SCRIPT_PATH" \
+        _secure_download_strict "$HY2_COMMON_SCRIPT_URL" "$HY2_COMMON_SCRIPT_PATH" \
             "$HY2_COMMON_SCRIPT_SHA256" "hysteria_common.sh"
     [[ ! -f "$HY2_MANAGE_SCRIPT_PATH" ]] && \
-        _secure_download "$HY2_MANAGE_SCRIPT_URL" "$HY2_MANAGE_SCRIPT_PATH" \
+        _secure_download_strict "$HY2_MANAGE_SCRIPT_URL" "$HY2_MANAGE_SCRIPT_PATH" \
             "$HY2_MANAGE_SCRIPT_SHA256" "manage_hysteria.sh"
 }
 
@@ -4765,11 +4866,11 @@ install_hy2_core() {
         log "Hysteria2 already present: $("$HY2_BIN" version 2>/dev/null | head -n1)"
         return 0
     fi
+    ensure_base_tools ca-certificates curl openssl qrencode || true
     log "Installing Hysteria2 via official get.hy2.sh..."
     HYSTERIA_USER=root bash <(curl -fsSL https://get.hy2.sh/) \
         || die "Official Hysteria2 install failed."
     [[ -x "$HY2_BIN" ]] || die "hysteria binary missing after install ($HY2_BIN)"
-    install_packages qrencode openssl 2>/dev/null || true
 }
 
 step_install_hy2() {
