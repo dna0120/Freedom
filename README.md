@@ -69,7 +69,9 @@ sudo ./install_freedom.sh --update
 ### Cập nhật
 
 - **`--check-updates`**: báo version script Freedom trên GitHub, pin bivlked vs latest, Xray/Hysteria2 local vs GitHub, và `apt-cache policy` cho `amneziawg-dkms` / `amneziawg-tools` (không tự `apt upgrade`).
-- **`--update` / mục cập nhật trong menu**: tải lại helper scripts (SHA256), nâng cấp binary Xray và Hysteria2, **giữ nguyên client profile**. Không merge tự động code AmneziaWG từ bivlked — xem [UPSTREAM.md](UPSTREAM.md).
+- **`--update` / mục cập nhật trong menu**: tải lại helper scripts (SHA256), nâng cấp binary Xray và Hysteria2, giữ nguyên user/UUID/mật khẩu của client. Không merge tự động code AmneziaWG từ bivlked — xem [UPSTREAM.md](UPSTREAM.md).
+- Sau khi cập nhật, script tự vá cấu hình cũ: đổi REALITY dest nếu domain đó đã bật post-quantum, cấp lại chứng chỉ self-signed thiếu SAN cho Hysteria2, và phát hành lại profile client (link/QR mới, cần quét lại trên máy).
+- `FREEDOM_VERSION` là version của repo này; `SCRIPT_VERSION` bám theo bản AmneziaWG installer của bivlked.
 
 Maintainer: `bash tools/check_upstream.sh` (exit 2 = có bản upstream mới).
 

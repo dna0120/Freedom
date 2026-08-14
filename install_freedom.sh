@@ -18,6 +18,8 @@ fi
 # --- Safe mode and Constants ---
 set -o pipefail
 SCRIPT_VERSION="5.21.2"
+# Freedom's own release counter; SCRIPT_VERSION tracks the AmneziaWG upstream.
+FREEDOM_VERSION="1.1.0"
 UPSTREAM_AWG_PIN="v5.21.2"
 UPSTREAM_AWG_REPO="bivlked/amneziawg-installer"
 
@@ -5693,23 +5695,24 @@ _apt_pkg_versions() {
 }
 
 step_check_updates() {
-    local remote_installer remote_ver remote_pin local_hash remote_hash tag inst cand pkg
+    local remote_installer remote_ver remote_pin remote_freedom local_hash remote_hash tag inst cand pkg
     echo ""
     log "### UPDATE CHECK ###"
-    log "Freedom installer: v${SCRIPT_VERSION} (AWG upstream pin ${UPSTREAM_AWG_PIN})"
+    log "Freedom installer: v${FREEDOM_VERSION} (AWG upstream pin ${UPSTREAM_AWG_PIN})"
 
     remote_installer="$(mktemp)"
     if curl -fLso "$remote_installer" --max-time 30 --retry 2 \
         "${PROJECT_RAW_BASE}/install_freedom.sh"; then
         remote_ver="$(_extract_quoted_assign "$remote_installer" SCRIPT_VERSION)"
         remote_pin="$(_extract_quoted_assign "$remote_installer" UPSTREAM_AWG_PIN)"
+        remote_freedom="$(_extract_quoted_assign "$remote_installer" FREEDOM_VERSION)"
         remote_hash="$(sha256sum "$remote_installer" | awk '{print $1}')"
         if [[ -f "${BASH_SOURCE[0]}" ]]; then
             local_hash="$(sha256sum "${BASH_SOURCE[0]}" 2>/dev/null | awk '{print $1}')"
         else
             local_hash=""
         fi
-        log "GitHub Freedom SCRIPT_VERSION: ${remote_ver:-unknown}"
+        log "GitHub Freedom version: ${remote_freedom:-unknown} (SCRIPT_VERSION ${remote_ver:-unknown})"
         [[ -n "$remote_pin" ]] && log "GitHub Freedom UPSTREAM_AWG_PIN: $remote_pin"
         if [[ -n "$local_hash" && "$local_hash" == "$remote_hash" ]]; then
             log "Freedom installer matches GitHub main."
@@ -5742,7 +5745,7 @@ step_check_updates() {
     fi
 
     if [[ -x "$HY2_BIN" ]]; then
-        log "Hysteria2 local: $("$HY2_BIN" version 2>/dev/null | head -n1)"
+        log "Hysteria2 local: $("$HY2_BIN" version 2>/dev/null | awk '/^Version:/{print $2; exit}')"
         if tag="$(_github_latest_tag "apernet/hysteria")"; then
             log "Hysteria2 latest release: $tag"
         fi
@@ -5764,6 +5767,51 @@ step_check_updates() {
         done
     fi
     log "Check complete. Apply with: sudo bash $0 --update"
+}
+
+# A REALITY dest chosen by an older release can start offering post-quantum key
+# exchange, which breaks client handshakes. Swap it and reissue the profiles.
+update_repair_xray_dest() {
+    local rc new_sni
+    [[ -n "${XRAY_SNI:-}" ]] || return 0
+    xray_tls_ping_ok "$XRAY_SNI"
+    rc=$?
+    [[ "$rc" -eq 0 ]] && return 0
+    if [[ "$rc" -eq 2 ]]; then
+        log_warn "REALITY dest $XRAY_SNI now negotiates post-quantum key exchange."
+    else
+        log_warn "REALITY dest $XRAY_SNI no longer answers a TLS 1.3 probe."
+    fi
+    XRAY_DEST=""
+    new_sni="$(xray_pick_dest)" || { log_warn "No healthy REALITY dest found; keeping $XRAY_SNI."; return 0; }
+    if [[ -z "$new_sni" || "$new_sni" == "$XRAY_SNI" ]]; then
+        XRAY_DEST="$XRAY_SNI"
+        log_warn "No better REALITY dest available; keeping $XRAY_SNI."
+        return 0
+    fi
+    XRAY_DEST="$new_sni"
+    XRAY_SNI="$new_sni"
+    xray_save_config || log_warn "Could not save the new REALITY dest."
+    xray_apply_config || log_warn "Applying the new REALITY dest failed."
+    xray_refresh_client_files
+    log "REALITY dest switched to $new_sni; re-import the Xray profiles on your devices."
+}
+
+# Self-signed certificates issued by older releases have no SAN and the profiles
+# carry no pin, which iOS clients reject. Reissue both.
+update_repair_hy2_cert() {
+    local cert="${HY2_TLS_CERT:-}"
+    [[ -n "$cert" && -f "$cert" ]] || return 0
+    [[ "$cert" == "$HY2_CERT_DIR"/* ]] || return 0
+    if ! openssl x509 -in "$cert" -noout -text 2>/dev/null | grep -q 'Subject Alternative Name'; then
+        log_warn "Hysteria2 self-signed certificate has no SAN; regenerating it."
+        hy2_generate_self_signed "${HY2_SNI:-hysteria.local}" \
+            || { log_warn "Could not regenerate the certificate."; return 0; }
+        hy2_save_config || log_warn "Could not save the Hysteria2 config."
+        hy2_apply_config || log_warn "Applying the new certificate failed."
+    fi
+    hy2_refresh_client_files
+    log "Hysteria2 profiles reissued with a certificate pin; re-import them on your devices."
 }
 
 step_apply_updates() {
@@ -5814,6 +5862,7 @@ step_apply_updates() {
             source "$XRAY_COMMON_SCRIPT_PATH"
             xray_load_config 2>/dev/null || true
             xray_apply_config || log_warn "xray_apply_config failed (clients/config kept on disk)."
+            update_repair_xray_dest
         fi
     fi
     if [[ -x "$HY2_BIN" || -f "$HY2_CONFIG_FILE" ]]; then
@@ -5825,10 +5874,11 @@ step_apply_updates() {
             source "$HY2_COMMON_SCRIPT_PATH"
             hy2_load_config 2>/dev/null || true
             hy2_apply_config || log_warn "hy2_apply_config failed (clients/config kept on disk)."
+            update_repair_hy2_cert
         fi
     fi
     log "AmneziaWG apt packages were NOT upgraded. Re-run --check-updates for candidate versions."
-    log "=== UPDATE APPLY COMPLETED (client profiles untouched) ==="
+    log "=== UPDATE APPLY COMPLETED ==="
 }
 
 menu_updates() {
