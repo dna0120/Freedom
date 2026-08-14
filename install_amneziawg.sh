@@ -35,16 +35,29 @@ COMMON_SCRIPT_URL="${COMMON_SCRIPT_URL:-${PROJECT_RAW_BASE}/awg_common.sh}"
 COMMON_SCRIPT_PATH="$AWG_DIR/awg_common.sh"
 MANAGE_SCRIPT_URL="${MANAGE_SCRIPT_URL:-${PROJECT_RAW_BASE}/manage_amneziawg.sh}"
 MANAGE_SCRIPT_PATH="$AWG_DIR/manage_amneziawg.sh"
+XRAY_DIR="/root/xray"
+XRAY_CONFIG_FILE="$XRAY_DIR/xraysetup_cfg.init"
+XRAY_CLIENTS_DIR="$XRAY_DIR/clients"
+XRAY_CONF_JSON="/usr/local/etc/xray/config.json"
+XRAY_BIN="/usr/local/bin/xray"
+XRAY_COMMON_SCRIPT_URL="${XRAY_COMMON_SCRIPT_URL:-${PROJECT_RAW_BASE}/xray_common.sh}"
+XRAY_COMMON_SCRIPT_PATH="$XRAY_DIR/xray_common.sh"
+XRAY_MANAGE_SCRIPT_URL="${XRAY_MANAGE_SCRIPT_URL:-${PROJECT_RAW_BASE}/manage_xray.sh}"
+XRAY_MANAGE_SCRIPT_PATH="$XRAY_DIR/manage_xray.sh"
 
 # SHA256 checksums of downloaded scripts. Updated at each release.
 # Verified in step5_download_scripts() after curl.
 # Format: sha256sum output (hex, 64 chars).
 COMMON_SCRIPT_SHA256="570d10630acf20b4e096aa3fffca6a1f1ea049186c2dcb1462b7def0871aa1d5"
 MANAGE_SCRIPT_SHA256="1cf43852f7a51234fa551f420a0de4e293b2f2bb1f0afd63ea41b8fde30fdf4d"
+XRAY_COMMON_SCRIPT_SHA256="4f6cae8026af21c3db7c863b1189a8c9ff959ced18096278e75d12b9adf7fa83"
+XRAY_MANAGE_SCRIPT_SHA256="fe29a1071ddec1017ff6da693d423f3e6e6311e1b391f7a921b6e8940fc77d43"
 
 # CLI flags
 UNINSTALL=0; HELP=0; HELP_EXIT_RC=0; DIAGNOSTIC=0; VERBOSE=0; NO_COLOR=0; AUTO_YES=0; NO_TWEAKS=0; NO_CPS=0
 FORCE_REINSTALL=0
+INSTALL_XRAY_ONLY=0
+UNINSTALL_XRAY=0
 _APT_UPDATED=0
 CLI_LANG=""
 UI_LANG="${UI_LANG:-}"
@@ -117,6 +130,8 @@ while [[ $# -gt 0 ]]; do
         --bbr=*)         CLI_BBR="${1#*=}" ;;
         --bbr)           CLI_BBR="on" ;;
         --no-bbr)        CLI_BBR="off" ;;
+        --install-xray)  INSTALL_XRAY_ONLY=1 ;;
+        --uninstall-xray) UNINSTALL_XRAY=1 ;;
         *) echo "Unknown argument: $1" >&2; HELP=1; HELP_EXIT_RC=1 ;;
     esac
     shift
@@ -467,7 +482,7 @@ ui_text() {
                 language_select) echo "Nhập lựa chọn [1-2, mặc định 1]: " ;;
                 menu_welcome) echo "Chào mừng đến với AmneziaWG-install!" ;;
                 menu_repo) echo "Mã nguồn: ${PROJECT_REPO_URL}" ;;
-                menu_installed) echo "Phát hiện AmneziaWG đã được cài." ;;
+                menu_installed) echo "Phát hiện AmneziaWG / Xray đã được cài." ;;
                 menu_status_running) echo "Trạng thái service: running" ;;
                 menu_status_stopped) echo "Trạng thái service: CHƯA chạy (dùng mục 4 để chẩn đoán)" ;;
                 menu_what) echo "Bạn muốn làm gì?" ;;
@@ -476,10 +491,23 @@ ui_text() {
                 menu_revoke) echo "3) Thu hồi client" ;;
                 menu_status) echo "4) Xem trạng thái server" ;;
                 menu_uninstall) echo "5) Gỡ AmneziaWG" ;;
-                menu_reconfigure) echo "6) Cấu hình lại server" ;;
+                menu_reconfigure) echo "6) Cấu hình lại AmneziaWG" ;;
                 menu_exit) echo "7) Thoát" ;;
-                menu_tip) echo "Mẹo: cấu hình lại = hỏi lại tùy chọn (không cài lại full). Cài lại full: sudo bash $0 --force" ;;
-                menu_select) echo "Chọn tùy chọn [1-7]: " ;;
+                menu_xray_install) echo "8) Cài / cấu hình Xray (VLESS+REALITY)" ;;
+                menu_xray_add) echo "9) Thêm client Xray" ;;
+                menu_xray_list) echo "10) Danh sách client Xray" ;;
+                menu_xray_revoke) echo "11) Thu hồi client Xray" ;;
+                menu_xray_status) echo "12) Trạng thái Xray" ;;
+                menu_xray_uninstall) echo "13) Gỡ Xray" ;;
+                menu_xray_reconfigure) echo "14) Cấu hình lại Xray" ;;
+                menu_tip) echo "Mẹo: 1-7 = AmneziaWG, 8-14 = Xray. Cài lại full AWG: sudo bash $0 --force" ;;
+                menu_select) echo "Chọn tùy chọn [1-14]: " ;;
+                xray_proto_prompt) echo "Giao thức Xray [1]: " ;;
+                xray_proto_vision) echo "1) VLESS + REALITY + Vision (mặc định, dễ share)" ;;
+                xray_proto_xhttp) echo "2) VLESS + REALITY + XHTTP" ;;
+                xray_dest_prompt) echo "REALITY dest/SNI" ;;
+                xray_not_installed) echo "Xray chưa được cài. Chọn mục 8 trước." ;;
+                xray_already) echo "Xray đã được cài." ;;
                 first_client_prompt) echo "Bây giờ bạn có thể tạo cấu hình client đầu tiên." ;;
                 add_more_hint) echo "Muốn thêm client nữa thì chỉ cần chạy lại script này!" ;;
                 client_cfg_title) echo "Cấu hình client" ;;
@@ -522,7 +550,7 @@ ui_text() {
                 language_select) echo "Select [1-2, default 1]: " ;;
                 menu_welcome) echo "Welcome to AmneziaWG-install!" ;;
                 menu_repo) echo "Repository: ${PROJECT_REPO_URL}" ;;
-                menu_installed) echo "It looks like AmneziaWG is already installed." ;;
+                menu_installed) echo "It looks like AmneziaWG / Xray is already installed." ;;
                 menu_status_running) echo "Service status: running" ;;
                 menu_status_stopped) echo "Service status: NOT running (use option 4 for diagnostics)" ;;
                 menu_what) echo "What do you want to do?" ;;
@@ -531,10 +559,23 @@ ui_text() {
                 menu_revoke) echo "3) Revoke existing client" ;;
                 menu_status) echo "4) Show server status" ;;
                 menu_uninstall) echo "5) Uninstall AmneziaWG" ;;
-                menu_reconfigure) echo "6) Reconfigure server" ;;
+                menu_reconfigure) echo "6) Reconfigure AmneziaWG" ;;
                 menu_exit) echo "7) Exit" ;;
-                menu_tip) echo "Tip: reconfigure re-asks settings (no full reinstall). Full reinstall: sudo bash $0 --force" ;;
-                menu_select) echo "Select an option [1-7]: " ;;
+                menu_xray_install) echo "8) Install / configure Xray (VLESS+REALITY)" ;;
+                menu_xray_add) echo "9) Add Xray client" ;;
+                menu_xray_list) echo "10) List Xray clients" ;;
+                menu_xray_revoke) echo "11) Revoke Xray client" ;;
+                menu_xray_status) echo "12) Show Xray status" ;;
+                menu_xray_uninstall) echo "13) Uninstall Xray" ;;
+                menu_xray_reconfigure) echo "14) Reconfigure Xray" ;;
+                menu_tip) echo "Tip: 1-7 = AmneziaWG, 8-14 = Xray. Full AWG reinstall: sudo bash $0 --force" ;;
+                menu_select) echo "Select an option [1-14]: " ;;
+                xray_proto_prompt) echo "Xray protocol [1]: " ;;
+                xray_proto_vision) echo "1) VLESS + REALITY + Vision (default, easiest share)" ;;
+                xray_proto_xhttp) echo "2) VLESS + REALITY + XHTTP" ;;
+                xray_dest_prompt) echo "REALITY dest/SNI" ;;
+                xray_not_installed) echo "Xray is not installed. Choose option 8 first." ;;
+                xray_already) echo "Xray is already installed." ;;
                 first_client_prompt) echo "You can now generate a client configuration." ;;
                 add_more_hint) echo "If you want to add more clients, simply run this script again!" ;;
                 client_cfg_title) echo "Client configuration" ;;
@@ -738,6 +779,8 @@ Script cài đặt và cấu hình AmneziaWG 2.0 cho Ubuntu (24.04 / 25.10 / 26.
 Tùy chọn:
   -h, --help            Hiện trợ giúp và thoát
   --uninstall           Gỡ AmneziaWG và toàn bộ cấu hình
+  --install-xray        Cài / cấu hình Xray (VLESS+REALITY), không đụng AWG
+  --uninstall-xray      Gỡ Xray (không đụng AmneziaWG)
   --diagnostic          Tạo báo cáo chẩn đoán và thoát
   -v, --verbose         Bật log chi tiết
   --no-color            Tắt màu terminal
@@ -773,11 +816,12 @@ Ví dụ:
   sudo bash install_amneziawg.sh --port=51820 --route-all
   sudo bash install_amneziawg.sh --preset=mobile --yes
   sudo bash install_amneziawg.sh --uninstall
+  sudo bash install_amneziawg.sh --install-xray
+  sudo bash install_amneziawg.sh --uninstall-xray
   sudo bash install_amneziawg.sh --diagnostic
 
 Sau khi cài, chạy lại script để mở menu quản lý:
-  1) Thêm client  2) Danh sách client  3) Thu hồi client
-  4) Trạng thái   5) Gỡ cài đặt         6) Cấu hình lại  7) Thoát
+  1-7 AmneziaWG   8-14 Xray
 
 Repository: ${PROJECT_REPO_URL}
 EOF
@@ -789,6 +833,8 @@ Script for installation and configuration of AmneziaWG 2.0 on Ubuntu (24.04 / 25
 Options:
   -h, --help            Show this help and exit
   --uninstall           Uninstall AmneziaWG and all its configurations
+  --install-xray        Install / configure Xray (VLESS+REALITY), leave AWG intact
+  --uninstall-xray      Uninstall Xray only (leave AmneziaWG intact)
   --diagnostic          Generate diagnostic report and exit
   -v, --verbose         Verbose output for debugging (including DEBUG)
   --no-color            Disable colored terminal output
@@ -837,11 +883,12 @@ Examples:
   sudo bash install_amneziawg.sh --preset=mobile --yes       # Optimized for mobile networks
   sudo bash install_amneziawg.sh                             # After install: manage menu
   sudo bash install_amneziawg.sh --uninstall                 # Uninstall
+  sudo bash install_amneziawg.sh --install-xray              # Install Xray beside AWG
+  sudo bash install_amneziawg.sh --uninstall-xray            # Uninstall Xray only
   sudo bash install_amneziawg.sh --diagnostic                # Diagnostics
 
 After installation, re-run this script (no flags) to open a management menu:
-  1) Add a new client  2) List clients  3) Revoke client
-  4) Status  5) Uninstall  6) Reconfigure server  7) Exit
+  1-7 AmneziaWG   8-14 Xray
   Same UX style as angristan/wireguard-install.
 
 Repository: ${PROJECT_REPO_URL}
@@ -2827,7 +2874,7 @@ step_uninstall() {
     log "Removing cron and scripts..."
     rm -f /etc/cron.d/awg-expiry 2>/dev/null
     log "=== UNINSTALL COMPLETED ==="
-    # Copy log and remove working directory
+    # Copy log and remove working directory (AWG only — never /root/xray)
     cp "$LOG_FILE" "$HOME/awg_uninstall.log" 2>/dev/null || true
     rm -rf "$AWG_DIR" 2>/dev/null || true
     exit 0
@@ -4203,6 +4250,287 @@ step5_download_scripts() {
 }
 
 # ==============================================================================
+# Xray (VLESS + REALITY) — parallel stack, does not touch AmneziaWG
+# ==============================================================================
+
+xray_stack_ready() {
+    [[ -x "$XRAY_BIN" && -f "$XRAY_CONF_JSON" && -f "$XRAY_CONFIG_FILE" ]]
+}
+
+ensure_xray_scripts() {
+    mkdir -p "$XRAY_DIR" || die "Cannot create $XRAY_DIR"
+    chmod 700 "$XRAY_DIR" 2>/dev/null || true
+    if [[ -f "$XRAY_COMMON_SCRIPT_PATH" && -f "$XRAY_MANAGE_SCRIPT_PATH" ]]; then
+        return 0
+    fi
+    log_warn "Xray management scripts missing under $XRAY_DIR — downloading..."
+    [[ ! -f "$XRAY_COMMON_SCRIPT_PATH" ]] && \
+        _secure_download "$XRAY_COMMON_SCRIPT_URL" "$XRAY_COMMON_SCRIPT_PATH" \
+            "$XRAY_COMMON_SCRIPT_SHA256" "xray_common.sh"
+    [[ ! -f "$XRAY_MANAGE_SCRIPT_PATH" ]] && \
+        _secure_download "$XRAY_MANAGE_SCRIPT_URL" "$XRAY_MANAGE_SCRIPT_PATH" \
+            "$XRAY_MANAGE_SCRIPT_SHA256" "manage_xray.sh"
+}
+
+# Prefer local copies from the same directory as this installer (dev / first push).
+xray_seed_scripts_from_installer_dir() {
+    local src_dir
+    src_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    mkdir -p "$XRAY_DIR" || return 1
+    if [[ -f "$src_dir/xray_common.sh" ]]; then
+        cp -f "$src_dir/xray_common.sh" "$XRAY_COMMON_SCRIPT_PATH"
+        chmod 700 "$XRAY_COMMON_SCRIPT_PATH"
+    fi
+    if [[ -f "$src_dir/manage_xray.sh" ]]; then
+        cp -f "$src_dir/manage_xray.sh" "$XRAY_MANAGE_SCRIPT_PATH"
+        chmod 700 "$XRAY_MANAGE_SCRIPT_PATH"
+    fi
+}
+
+run_manage_xray() {
+    ensure_xray_scripts
+    bash "$XRAY_MANAGE_SCRIPT_PATH" "$@"
+}
+
+install_xray_core() {
+    if [[ -x "$XRAY_BIN" ]]; then
+        log "Xray core already present: $("$XRAY_BIN" version 2>/dev/null | head -n1)"
+        return 0
+    fi
+    log "Installing Xray-core via official Xray-install..."
+    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install \
+        || die "Official Xray-install failed."
+    [[ -x "$XRAY_BIN" ]] || die "xray binary missing after install ($XRAY_BIN)"
+    install_packages qrencode openssl 2>/dev/null || true
+}
+
+step_install_xray() {
+    if [ "$(id -u)" -ne 0 ]; then die "Run the script as root (sudo bash $0)."; fi
+    log "### XRAY INSTALL (VLESS + REALITY Vision/XHTTP) ###"
+    mkdir -p "$XRAY_DIR" "$XRAY_CLIENTS_DIR" || die "Cannot create $XRAY_DIR"
+    chmod 700 "$XRAY_DIR" "$XRAY_CLIENTS_DIR"
+    xray_seed_scripts_from_installer_dir
+    if [[ ! -f "$XRAY_COMMON_SCRIPT_PATH" ]]; then
+        ensure_xray_scripts
+    fi
+    # shellcheck source=/dev/null
+    source "$XRAY_COMMON_SCRIPT_PATH"
+
+    install_xray_core
+
+    local vision_port xhttp_port dest sni input_dest=""
+    if [[ -f "$XRAY_CONFIG_FILE" ]]; then
+        xray_load_config || true
+    fi
+
+    if [[ -z "${XRAY_VISION_PORT:-}" ]] || ! [[ "${XRAY_VISION_PORT}" =~ ^[0-9]+$ ]]; then
+        vision_port="$(xray_pick_free_tcp_port)" || die "Could not pick a free TCP port for Vision"
+    else
+        vision_port="$XRAY_VISION_PORT"
+    fi
+    if [[ -z "${XRAY_XHTTP_PORT:-}" ]] || ! [[ "${XRAY_XHTTP_PORT}" =~ ^[0-9]+$ ]]; then
+        xhttp_port="$(xray_pick_free_tcp_port "$vision_port")" || die "Could not pick a free TCP port for XHTTP"
+    else
+        xhttp_port="$XRAY_XHTTP_PORT"
+        if [[ "$xhttp_port" == "$vision_port" ]]; then
+            xhttp_port="$(xray_pick_free_tcp_port "$vision_port")" || die "Could not pick a free TCP port for XHTTP"
+        fi
+    fi
+    XRAY_VISION_PORT="$vision_port"
+    XRAY_XHTTP_PORT="$xhttp_port"
+
+    if [[ -z "${XRAY_PRIVATE_KEY:-}" || -z "${XRAY_PUBLIC_KEY:-}" ]]; then
+        xray_generate_keys || die "Failed to generate REALITY x25519 keys"
+    fi
+    [[ -n "${XRAY_SHORT_ID:-}" ]] || XRAY_SHORT_ID="$(xray_generate_short_id)"
+    [[ -n "${XRAY_XHTTP_PATH:-}" ]] || XRAY_XHTTP_PATH="$(xray_generate_path)"
+
+    log "Probing REALITY dest (TLS 1.3 + HTTP/2, not Cloudflare)..."
+    dest="$(xray_pick_dest)"
+    sni="${dest%%:*}"
+    echo ""
+    log "Suggested REALITY dest/SNI: ${sni}"
+    if [[ "${AUTO_YES:-0}" -eq 0 ]]; then
+        read -rp "$(ui_text xray_dest_prompt) [${sni}]: " input_dest < /dev/tty
+        if [[ -n "$input_dest" ]]; then
+            sni="${input_dest%%:*}"
+            dest="$sni"
+        fi
+    fi
+    XRAY_DEST="$dest"
+    XRAY_SNI="$sni"
+    XRAY_ENDPOINT="$(xray_get_public_ip 2>/dev/null || true)"
+
+    xray_save_config || die "Failed to save $XRAY_CONFIG_FILE"
+    xray_apply_config || die "Failed to write/start Xray config"
+    xray_maybe_open_ufw
+    log "Xray installed."
+    log "  Vision TCP: ${XRAY_VISION_PORT}"
+    log "  XHTTP  TCP: ${XRAY_XHTTP_PORT}"
+    log "  REALITY dest/SNI: ${XRAY_SNI}"
+    log "Manage: sudo bash $0  → options 9-14"
+}
+
+step_uninstall_xray() {
+    if [ "$(id -u)" -ne 0 ]; then die "Run the script as root (sudo bash $0)."; fi
+    log "### XRAY UNINSTALL ###"
+    echo ""
+    echo "WARNING! This removes Xray-core and /root/xray only."
+    echo "AmneziaWG is left untouched."
+    echo ""
+    local confirm=""
+    if [[ "${AUTO_YES:-0}" -eq 0 ]]; then
+        read -rp "Uninstall Xray? (type 'yes'): " confirm < /dev/tty
+        if [[ ! "$confirm" =~ ^[[:space:]]*[Yy][Ee][Ss][[:space:]]*$ ]]; then
+            log "Xray uninstall cancelled."
+            return 0
+        fi
+    fi
+    if [[ -f "$XRAY_COMMON_SCRIPT_PATH" ]]; then
+        # shellcheck source=/dev/null
+        source "$XRAY_COMMON_SCRIPT_PATH" 2>/dev/null || true
+        xray_load_config 2>/dev/null || true
+        xray_maybe_close_ufw
+    fi
+    systemctl stop xray 2>/dev/null || true
+    systemctl disable xray 2>/dev/null || true
+    if curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh >/tmp/xray-install-release.sh 2>/dev/null; then
+        bash /tmp/xray-install-release.sh remove --purge >/dev/null 2>&1 || true
+        rm -f /tmp/xray-install-release.sh
+    fi
+    rm -rf "$XRAY_DIR" /usr/local/etc/xray 2>/dev/null || true
+    log "=== XRAY UNINSTALL COMPLETED ==="
+}
+
+step_reconfigure_xray() {
+    if ! xray_stack_ready; then
+        echo "$(ui_text xray_not_installed)"
+        return 1
+    fi
+    # shellcheck source=/dev/null
+    source "$XRAY_COMMON_SCRIPT_PATH"
+    xray_load_config || die "Cannot load $XRAY_CONFIG_FILE"
+    local input_dest="" input_vp="" input_xp=""
+    echo ""
+    log "Reconfigure Xray (Enter = keep current value)."
+    if [[ "${AUTO_YES:-0}" -eq 0 ]]; then
+        read -rp "Vision TCP port [${XRAY_VISION_PORT}]: " input_vp < /dev/tty
+        [[ -n "$input_vp" ]] && XRAY_VISION_PORT="$input_vp"
+        read -rp "XHTTP TCP port [${XRAY_XHTTP_PORT}]: " input_xp < /dev/tty
+        [[ -n "$input_xp" ]] && XRAY_XHTTP_PORT="$input_xp"
+        read -rp "$(ui_text xray_dest_prompt) [${XRAY_SNI}]: " input_dest < /dev/tty
+        if [[ -n "$input_dest" ]]; then
+            XRAY_SNI="${input_dest%%:*}"
+            XRAY_DEST="$XRAY_SNI"
+        fi
+    fi
+    xray_save_config || die "Failed to save Xray config"
+    xray_apply_config || die "Failed to apply Xray config"
+    xray_maybe_open_ufw
+    log "Xray reconfigured."
+}
+
+menu_xray_add_client() {
+    if ! xray_stack_ready; then
+        echo "$(ui_text xray_not_installed)"
+        return 0
+    fi
+    ensure_xray_scripts
+    local CLIENT_NAME="" CLIENT_EXISTS=1 proto_pick="" proto="vision"
+    echo ""
+    echo "$(ui_text client_cfg_title) (Xray)"
+    echo ""
+    echo "$(ui_text xray_proto_vision)"
+    echo "$(ui_text xray_proto_xhttp)"
+    read -rp "$(ui_text xray_proto_prompt)" proto_pick < /dev/tty
+    case "$proto_pick" in
+        2|xhttp|XHTTP) proto="xhttp" ;;
+        *) proto="vision" ;;
+    esac
+    echo "$(ui_text client_name_rule1)"
+    echo "$(ui_text client_name_rule2)"
+    until [[ ${CLIENT_NAME} =~ ^[a-zA-Z0-9_-]+$ && ${CLIENT_EXISTS} == '0' && ${#CLIENT_NAME} -lt 16 ]]; do
+        read -rp "$(ui_text client_name_prompt)" -e CLIENT_NAME < /dev/tty
+        if [[ -z "$CLIENT_NAME" ]]; then
+            echo "$(ui_text client_name_empty)"
+            CLIENT_EXISTS=1
+            continue
+        fi
+        if [[ -f "$XRAY_CLIENTS_DIR/${CLIENT_NAME}.meta" ]]; then
+            CLIENT_EXISTS=1
+            echo ""
+            echo -e "\033[0;33m$(ui_text client_name_exists)\033[0m"
+            echo ""
+        else
+            CLIENT_EXISTS=0
+        fi
+    done
+    echo ""
+    run_manage_xray --yes add "$CLIENT_NAME" --proto="$proto"
+}
+
+menu_xray_list_clients() {
+    if ! xray_stack_ready; then
+        echo "$(ui_text xray_not_installed)"
+        return 0
+    fi
+    echo ""
+    run_manage_xray list
+}
+
+menu_xray_revoke_client() {
+    if ! xray_stack_ready; then
+        echo "$(ui_text xray_not_installed)"
+        return 0
+    fi
+    local NUMBER_OF_CLIENTS=0 CLIENT_NUMBER="" CLIENT_NAME names=()
+    shopt -s nullglob
+    for f in "$XRAY_CLIENTS_DIR"/*.meta; do
+        names+=("$(basename "$f" .meta)")
+    done
+    shopt -u nullglob
+    NUMBER_OF_CLIENTS=${#names[@]}
+    if [[ ${NUMBER_OF_CLIENTS} -eq 0 ]]; then
+        echo ""
+        echo "$(ui_text no_clients)"
+        return 0
+    fi
+    echo ""
+    echo "$(ui_text select_revoke)"
+    local i
+    for i in "${!names[@]}"; do
+        printf '%s) %s\n' "$((i+1))" "${names[$i]}"
+    done
+    until [[ ${CLIENT_NUMBER} =~ ^[0-9]+$ && ${CLIENT_NUMBER} -ge 1 && ${CLIENT_NUMBER} -le ${NUMBER_OF_CLIENTS} ]]; do
+        if [[ ${NUMBER_OF_CLIENTS} -eq 1 ]]; then
+            read -rp "$(ui_text select_one_1)" CLIENT_NUMBER < /dev/tty
+        else
+            printf -v _sel_prompt "$(ui_text select_one_n)" "${NUMBER_OF_CLIENTS}"
+            read -rp "$_sel_prompt" CLIENT_NUMBER < /dev/tty
+        fi
+    done
+    CLIENT_NAME="${names[$((CLIENT_NUMBER-1))]}"
+    echo ""
+    printf "$(ui_text revoking)\n" "$CLIENT_NAME"
+    if run_manage_xray --yes remove "$CLIENT_NAME"; then
+        printf -v _revoked_ok "$(ui_text revoked_ok)" "$CLIENT_NAME"
+        echo -e "\033[0;32m${_revoked_ok}\033[0m"
+    else
+        printf -v _revoked_fail "$(ui_text revoked_fail)" "$CLIENT_NAME"
+        echo -e "\033[0;31m${_revoked_fail}\033[0m"
+    fi
+}
+
+menu_xray_show_status() {
+    if ! xray_stack_ready; then
+        echo "$(ui_text xray_not_installed)"
+        return 0
+    fi
+    echo ""
+    run_manage_xray status || true
+}
+
+# ==============================================================================
 # STEP 6: Config generation (native, without awgcfg.py)
 # ==============================================================================
 
@@ -4401,6 +4729,10 @@ run_manage() {
 }
 
 menu_add_client() {
+    if [[ ! -f "$SERVER_CONF_FILE" ]]; then
+        echo "AmneziaWG is not installed yet. Run a full install first (or use option 8 for Xray only)."
+        return 0
+    fi
     local CLIENT_NAME="" CLIENT_EXISTS=1
     echo ""
     echo "$(ui_text client_cfg_title)"
@@ -4440,11 +4772,19 @@ menu_add_client() {
 }
 
 menu_list_clients() {
+    if [[ ! -f "$SERVER_CONF_FILE" ]]; then
+        echo "AmneziaWG is not installed yet."
+        return 0
+    fi
     echo ""
     run_manage -v list
 }
 
 menu_revoke_client() {
+    if [[ ! -f "$SERVER_CONF_FILE" ]]; then
+        echo "AmneziaWG is not installed yet."
+        return 0
+    fi
     local NUMBER_OF_CLIENTS CLIENT_NUMBER="" CLIENT_NAME
     NUMBER_OF_CLIENTS=$(grep -c -E '^#_Name = ' "$SERVER_CONF_FILE" 2>/dev/null) || NUMBER_OF_CLIENTS=0
     if [[ ${NUMBER_OF_CLIENTS} -eq 0 ]]; then
@@ -4478,6 +4818,10 @@ menu_revoke_client() {
 }
 
 menu_show_status() {
+    if [[ ! -f "$SERVER_CONF_FILE" ]]; then
+        echo "AmneziaWG is not installed yet."
+        return 0
+    fi
     echo ""
     run_manage check || true
     echo ""
@@ -4499,6 +4843,11 @@ manageMenu() {
     else
         echo -e "$(ui_text menu_status_stopped)" | sed 's/CHƯA chạy/\033[0;33mCHƯA chạy\033[0m/; s/NOT running/\033[0;33mNOT running\033[0m/'
     fi
+    if systemctl is-active --quiet xray 2>/dev/null; then
+        echo -e "Xray: \033[0;32mrunning\033[0m"
+    elif [[ -f "$XRAY_CONFIG_FILE" ]]; then
+        echo -e "Xray: \033[0;33mNOT running\033[0m"
+    fi
     echo ""
     echo "$(ui_text menu_what)"
     echo "   $(ui_text menu_add)"
@@ -4508,9 +4857,16 @@ manageMenu() {
     echo "   $(ui_text menu_uninstall)"
     echo "   $(ui_text menu_reconfigure)"
     echo "   $(ui_text menu_exit)"
+    echo "   $(ui_text menu_xray_install)"
+    echo "   $(ui_text menu_xray_add)"
+    echo "   $(ui_text menu_xray_list)"
+    echo "   $(ui_text menu_xray_revoke)"
+    echo "   $(ui_text menu_xray_status)"
+    echo "   $(ui_text menu_xray_uninstall)"
+    echo "   $(ui_text menu_xray_reconfigure)"
     echo ""
     echo "$(ui_text menu_tip)"
-    until [[ ${MENU_OPTION} =~ ^[1-7]$ ]]; do
+    until [[ ${MENU_OPTION} =~ ^([1-9]|1[0-4])$ ]]; do
         read -rp "$(ui_text menu_select)" MENU_OPTION < /dev/tty
     done
     case "${MENU_OPTION}" in
@@ -4524,21 +4880,33 @@ manageMenu() {
         FORCE_REINSTALL=1
         ;;
     7) exit 0 ;;
+    8) step_install_xray ;;
+    9) menu_xray_add_client ;;
+    10) menu_xray_list_clients ;;
+    11) menu_xray_revoke_client ;;
+    12) menu_xray_show_status ;;
+    13) step_uninstall_xray ;;
+    14) step_reconfigure_xray ;;
     esac
 }
 
 should_open_manage_menu() {
     [[ "$FORCE_REINSTALL" -eq 1 ]] && return 1
-    [[ -f "$SERVER_CONF_FILE" ]] || return 1
-    if [[ -f "$STATE_FILE" ]]; then
-        local _saved_step
-        _saved_step="$(tr -d '[:space:]' < "$STATE_FILE" 2>/dev/null || true)"
-        if [[ "$_saved_step" =~ ^[0-9]+$ ]] && (( _saved_step < 99 )); then
-            log_warn "Unfinished installation detected (state=$_saved_step). Resuming installer instead of opening manage menu."
-            return 1
+    [[ "$INSTALL_XRAY_ONLY" -eq 1 ]] && return 1
+    local awg_ok=0 xray_ok=0
+    if [[ -f "$SERVER_CONF_FILE" ]]; then
+        if [[ -f "$STATE_FILE" ]]; then
+            local _saved_step
+            _saved_step="$(tr -d '[:space:]' < "$STATE_FILE" 2>/dev/null || true)"
+            if [[ "$_saved_step" =~ ^[0-9]+$ ]] && (( _saved_step < 99 )); then
+                log_warn "Unfinished installation detected (state=$_saved_step). Resuming installer instead of opening manage menu."
+                return 1
+            fi
         fi
+        awg_ok=1
     fi
-    return 0
+    [[ -f "$XRAY_CONFIG_FILE" && -f "$XRAY_CONF_JSON" ]] && xray_ok=1
+    (( awg_ok == 1 || xray_ok == 1 ))
 }
 
 # ==============================================================================
@@ -4548,6 +4916,12 @@ should_open_manage_menu() {
 select_ui_language
 if [[ "$HELP" -eq 1 ]]; then show_help; fi
 if [[ "$UNINSTALL" -eq 1 ]]; then step_uninstall; fi
+if [[ "$UNINSTALL_XRAY" -eq 1 ]]; then step_uninstall_xray; exit 0; fi
+if [[ "$INSTALL_XRAY_ONLY" -eq 1 ]]; then
+    if [ "$(id -u)" -ne 0 ]; then die "Run the script as root (sudo bash $0)."; fi
+    step_install_xray
+    exit 0
+fi
 if [[ "$DIAGNOSTIC" -eq 1 ]]; then create_diagnostic_report; exit 0; fi
 if [[ "$VERBOSE" -eq 1 ]]; then set -x; fi
 
