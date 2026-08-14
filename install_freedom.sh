@@ -5837,6 +5837,22 @@ step_apply_updates() {
     chmod 700 "$AWG_DIR/install_freedom.sh"
     log "Saved installer copy: $AWG_DIR/install_freedom.sh"
 
+    # The rest of the update (including migrations for older layouts) must run
+    # from the version being installed, not from the copy that started it.
+    if [[ "${UPDATE_SELF_REEXEC:-0}" -eq 0 ]]; then
+        local running_hash="" fresh_hash
+        fresh_hash="$(sha256sum "$new_installer" | awk '{print $1}')"
+        [[ -f "${BASH_SOURCE[0]}" ]] && \
+            running_hash="$(sha256sum "${BASH_SOURCE[0]}" 2>/dev/null | awk '{print $1}')"
+        if [[ "$running_hash" != "$fresh_hash" ]]; then
+            rm -rf "$tmpdir"
+            log "Continuing the update with the freshly downloaded installer..."
+            local -a reexec_args=(--update)
+            [[ "${AUTO_YES:-0}" -eq 1 ]] && reexec_args+=(--yes)
+            UPDATE_SELF_REEXEC=1 exec bash "$AWG_DIR/install_freedom.sh" "${reexec_args[@]}"
+        fi
+    fi
+
     if [[ -f "$SERVER_CONF_FILE" || -f "$COMMON_SCRIPT_PATH" ]]; then
         _secure_download_strict "$COMMON_SCRIPT_URL" "$COMMON_SCRIPT_PATH" "$common_sha" "awg_common.sh"
         _secure_download_strict "$MANAGE_SCRIPT_URL" "$MANAGE_SCRIPT_PATH" "$manage_sha" "manage_amneziawg.sh"
