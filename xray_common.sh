@@ -171,43 +171,93 @@ xray_generate_service_name() {
     printf 'grpc%s' "$hex"
 }
 
-# Candidate dests: TLS1.3+H2 sites that are NOT Cloudflare (REALITY warning).
+# Candidate dests: TLS1.3 sites that are NOT behind Cloudflare (REALITY warning).
+# Most big-tech sites now negotiate X25519MLKEM768, which REALITY cannot relay,
+# so the list leans towards hosts still on classic X25519.
 xray_dest_candidates() {
     cat <<'EOF'
-www.microsoft.com
-www.apple.com
+www.yahoo.co.jp
+www.rakuten.co.jp
+www.nicovideo.jp
+www.jal.co.jp
+www.nintendo.co.jp
+www.sap.com
 www.samsung.com
 www.sony.com
-www.nvidia.com
 www.intel.com
-download.microsoft.com
-update.microsoft.com
+www.apple.com
+www.microsoft.com
 EOF
 }
 
+# REALITY relays the real handshake of the target. A target that negotiates a
+# post-quantum key exchange (X25519MLKEM768) makes that handshake fail with
+# "handshake did not complete successfully", so such hosts are unusable.
 xray_tls_ping_ok() {
     local host="$1" out
     command -v "$XRAY_BIN" >/dev/null 2>&1 || return 1
-    out="$("$XRAY_BIN" tls ping "$host" 2>/dev/null)" || return 1
-    printf '%s\n' "$out" | grep -qiE 'tls 1\.3|tls1\.3|h2|http/2' || return 1
+    out="$(timeout 20 "$XRAY_BIN" tls ping "$host" 2>/dev/null)" || return 1
+    printf '%s\n' "$out" | grep -q 'Handshake succeeded' || return 1
+    printf '%s\n' "$out" | grep -qiE 'tls version: +tls ?1\.3' || return 1
+    if printf '%s\n' "$out" | grep -qiE 'post-quantum key exchange: +true|MLKEM'; then
+        return 2
+    fi
     return 0
 }
 
 xray_pick_dest() {
-    local host cand
+    local cand rc fallback=""
     if [[ -n "${XRAY_DEST:-}" ]]; then
         printf '%s\n' "${XRAY_DEST%%:*}"
         return 0
     fi
     while IFS= read -r cand; do
         [[ -z "$cand" || "$cand" =~ ^# ]] && continue
-        if xray_tls_ping_ok "$cand"; then
-            printf '%s\n' "$cand"
-            return 0
-        fi
-        log_warn "REALITY dest candidate failed tls ping: $cand"
+        xray_tls_ping_ok "$cand"
+        rc=$?
+        case "$rc" in
+            0)
+                printf '%s\n' "$cand"
+                return 0
+                ;;
+            2)
+                [[ -z "$fallback" ]] && fallback="$cand"
+                log_warn "REALITY dest candidate uses post-quantum key exchange, skipping: $cand"
+                ;;
+            *)
+                log_warn "REALITY dest candidate failed tls ping: $cand"
+                ;;
+        esac
     done < <(xray_dest_candidates)
-    printf '%s\n' "www.microsoft.com"
+    if [[ -n "$fallback" ]]; then
+        log_warn "No post-quantum-free REALITY dest found; falling back to $fallback (clients may fail to handshake)."
+        printf '%s\n' "$fallback"
+        return 0
+    fi
+    printf '%s\n' "www.yahoo.co.jp"
+}
+
+# dest/SNI changes invalidate every issued profile, so rewrite them in place.
+xray_refresh_client_files() {
+    local f name proto uuid count=0
+    shopt -s nullglob
+    for f in "$XRAY_CLIENTS_DIR"/*.meta; do
+        name="$(basename "$f" .meta)"
+        # shellcheck source=/dev/null
+        source "$f"
+        proto="${XRAY_CLIENT_PROTO:-}"
+        uuid="${XRAY_CLIENT_UUID:-}"
+        [[ -n "$proto" && -n "$uuid" ]] || continue
+        xray_write_client_files "$name" "$proto" "$uuid" >/dev/null || continue
+        if command -v qrencode >/dev/null 2>&1; then
+            qrencode -t png -o "$XRAY_CLIENTS_DIR/${name}.png" \
+                < "$XRAY_CLIENTS_DIR/${name}.url" 2>/dev/null || true
+        fi
+        count=$((count + 1))
+    done
+    shopt -u nullglob
+    [[ "$count" -gt 0 ]] && log "Refreshed $count Xray client profile(s)."
+    return 0
 }
 
 xray_cdn_enabled() {

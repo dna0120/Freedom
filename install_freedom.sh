@@ -25,7 +25,7 @@ AWG_DIR="/root/awg"
 CONFIG_FILE="$AWG_DIR/awgsetup_cfg.init"
 STATE_FILE="$AWG_DIR/setup_state"
 STACK_CHOICE_FILE="$AWG_DIR/.stack_choice"
-LOG_FILE="$AWG_DIR/install_amneziawg.log"
+LOG_FILE="$AWG_DIR/install_freedom.log"
 KEYS_DIR="$AWG_DIR/keys"
 SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"
 PARAMS_FILE="/etc/amnezia/amneziawg/params"
@@ -60,7 +60,7 @@ HY2_MANAGE_SCRIPT_PATH="$HY2_DIR/manage_hysteria.sh"
 # Format: sha256sum output (hex, 64 chars).
 COMMON_SCRIPT_SHA256="ca3bba0f989ab01775ad91803fb59089cb27039102b594b337bf4299d3f640b4"
 MANAGE_SCRIPT_SHA256="7d6c0a7f0a0983952e4b6a055f0553385d402cc7d017ffd91e1a4707485044d0"
-XRAY_COMMON_SCRIPT_SHA256="c4924064e031b43f66c0479299c4f56f3407a73528d3a426ae97b884a67c4570"
+XRAY_COMMON_SCRIPT_SHA256="72b7ebe5e4a303b886b6c30f40152727a3ba9474c49641ebaa01f5ad2edbd725"
 XRAY_MANAGE_SCRIPT_SHA256="ddc7a925b1906d17e68359a93f4b7a03a45b9485d85f4f0210b88369d9e0f0b8"
 HY2_COMMON_SCRIPT_SHA256="949d8f4e87320b9c90c8b8db33dd93761a987fa0a20fbf94196d05a1003fd536"
 HY2_MANAGE_SCRIPT_SHA256="9276c9694445a31f9341bfa3fcc06741028d7258ce26e8aa8e6be7865825561a"
@@ -515,9 +515,9 @@ ui_text() {
                 stack_opt_all) echo "5) Cài cả ba (AmneziaWG + Xray + Hysteria2)" ;;
                 stack_select) echo "Chọn [1-5, mặc định 1]: " ;;
                 stack_chosen) echo "Sẽ cài: %s" ;;
-                menu_welcome) echo "Chào mừng đến với AmneziaWG-install!" ;;
+                menu_welcome) echo "Chào mừng đến với Freedom!" ;;
                 menu_repo) echo "Mã nguồn: ${PROJECT_REPO_URL}" ;;
-                menu_installed) echo "Phát hiện AmneziaWG / Xray đã được cài." ;;
+                menu_installed) echo "Phát hiện giao thức Freedom đã được cài." ;;
                 menu_installed_stacks) echo "Giao thức đã cài:" ;;
                 menu_awg_section) echo "AmneziaWG" ;;
                 menu_xray_section) echo "Xray" ;;
@@ -561,6 +561,9 @@ ui_text() {
                 xray_proto_cdn_xhttp) echo "4) CDN front: VLESS + TLS + XHTTP (cần domain)" ;;
                 xray_proto_cdn_grpc) echo "5) CDN front: VLESS + TLS + gRPC (cần domain)" ;;
                 xray_dest_prompt) echo "REALITY dest/SNI" ;;
+                xray_dest_pq_warn) echo "Dest/SNI hiện tại dùng key exchange hậu lượng tử (X25519MLKEM768) nên REALITY không bắt tay được." ;;
+                xray_dest_unreachable_warn) echo "Không kiểm tra được dest/SNI hiện tại (TLS 1.3)." ;;
+                xray_dest_suggest) echo "Dest/SNI đề xuất: %s" ;;
                 xray_cdn_prompt) echo "Bật CDN/TLS front (Cloudflare-friendly domain)? [y/N]: " ;;
                 xray_domain_prompt) echo "Domain cho CDN/TLS (A record trỏ về VPS)" ;;
                 xray_not_installed) echo "Xray chưa được cài. Chọn mục 8 trước." ;;
@@ -616,9 +619,9 @@ ui_text() {
                 stack_opt_all) echo "5) Install all three (AmneziaWG + Xray + Hysteria2)" ;;
                 stack_select) echo "Select [1-5, default 1]: " ;;
                 stack_chosen) echo "Will install: %s" ;;
-                menu_welcome) echo "Welcome to AmneziaWG-install!" ;;
+                menu_welcome) echo "Welcome to Freedom!" ;;
                 menu_repo) echo "Repository: ${PROJECT_REPO_URL}" ;;
-                menu_installed) echo "It looks like AmneziaWG / Xray is already installed." ;;
+                menu_installed) echo "An installed Freedom stack was detected." ;;
                 menu_installed_stacks) echo "Installed stacks:" ;;
                 menu_awg_section) echo "AmneziaWG" ;;
                 menu_xray_section) echo "Xray" ;;
@@ -662,6 +665,9 @@ ui_text() {
                 xray_proto_cdn_xhttp) echo "4) CDN front: VLESS + TLS + XHTTP (needs domain)" ;;
                 xray_proto_cdn_grpc) echo "5) CDN front: VLESS + TLS + gRPC (needs domain)" ;;
                 xray_dest_prompt) echo "REALITY dest/SNI" ;;
+                xray_dest_pq_warn) echo "The current dest/SNI negotiates a post-quantum key exchange (X25519MLKEM768), which REALITY cannot relay." ;;
+                xray_dest_unreachable_warn) echo "Could not verify the current dest/SNI (TLS 1.3)." ;;
+                xray_dest_suggest) echo "Suggested dest/SNI: %s" ;;
                 xray_cdn_prompt) echo "Enable CDN/TLS front (Cloudflare-friendly domain)? [y/N]: " ;;
                 xray_domain_prompt) echo "Domain for CDN/TLS (A record to this VPS)" ;;
                 xray_not_installed) echo "Xray is not installed. Choose option 8 first." ;;
@@ -4732,22 +4738,37 @@ step_reconfigure_xray() {
     # shellcheck source=/dev/null
     source "$XRAY_COMMON_SCRIPT_PATH"
     xray_load_config || die "Cannot load $XRAY_CONFIG_FILE"
-    local input_dest="" input_vp="" input_xp=""
+    local input_dest="" input_vp="" input_xp="" dest_default="$XRAY_SNI" rc=0
     echo ""
     log "Reconfigure Xray (Enter = keep current value)."
+    xray_tls_ping_ok "$XRAY_SNI"
+    rc=$?
+    if (( rc != 0 )); then
+        if (( rc == 2 )); then
+            log_warn "$(ui_text xray_dest_pq_warn)"
+        else
+            log_warn "$(ui_text xray_dest_unreachable_warn)"
+        fi
+        dest_default="$(XRAY_DEST=""; xray_pick_dest)"
+        log "$(printf "$(ui_text xray_dest_suggest)" "$dest_default")"
+    fi
     if [[ "${AUTO_YES:-0}" -eq 0 ]]; then
         read -rp "Vision TCP port [${XRAY_VISION_PORT}]: " input_vp < /dev/tty
         [[ -n "$input_vp" ]] && XRAY_VISION_PORT="$input_vp"
         read -rp "XHTTP TCP port [${XRAY_XHTTP_PORT}]: " input_xp < /dev/tty
         [[ -n "$input_xp" ]] && XRAY_XHTTP_PORT="$input_xp"
-        read -rp "$(ui_text xray_dest_prompt) [${XRAY_SNI}]: " input_dest < /dev/tty
-        if [[ -n "$input_dest" ]]; then
-            XRAY_SNI="${input_dest%%:*}"
-            XRAY_DEST="$XRAY_SNI"
-        fi
+        read -rp "$(ui_text xray_dest_prompt) [${dest_default}]: " input_dest < /dev/tty
+        [[ -z "$input_dest" ]] && input_dest="$dest_default"
+    else
+        input_dest="$dest_default"
+    fi
+    if [[ -n "$input_dest" && "$input_dest" != "$XRAY_SNI" ]]; then
+        XRAY_SNI="${input_dest%%:*}"
+        XRAY_DEST="$XRAY_SNI"
     fi
     xray_save_config || die "Failed to save Xray config"
     xray_apply_config || die "Failed to apply Xray config"
+    xray_refresh_client_files
     xray_maybe_open_ufw
     log "Xray reconfigured."
 }
