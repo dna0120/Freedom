@@ -77,6 +77,7 @@ Commands:
   remove <name>
   status|check
   check-sni
+  discover-sni   # Reality-SNI-Finder nearby scan → verify → candidate pool
   add-sni <hostname>
   reconfigure
 
@@ -88,7 +89,7 @@ EOF
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        add|list|remove|status|check|check-sni|add-sni|reconfigure)
+        add|list|remove|status|check|check-sni|discover-sni|add-sni|reconfigure)
             COMMAND="$1" ;;
         --proto=*) CLIENT_PROTO="${1#*=}" ;;
         --yes|-y) AUTO_YES=1 ;;
@@ -181,6 +182,9 @@ case "$COMMAND" in
         ;;
     check-sni)
         xray_scan_destinations
+        ;;
+    discover-sni)
+        xray_discover_nearby_sni
         ;;
     add-sni)
         [[ -n "$CLIENT_NAME" ]] || die "Usage: manage_xray.sh add-sni <hostname>"

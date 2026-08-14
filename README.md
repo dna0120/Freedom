@@ -45,7 +45,9 @@ Menu được đánh số động: chỉ hiện thao tác của stack đã cài;
 - Thêm client — Vision / XHTTP / gRPC / CDN-XHTTP / CDN-gRPC, xuất QR + `vless://` + JSON
 - List / thu hồi / trạng thái / gỡ / cấu hình lại
 - **Quét SNI REALITY khả dụng** trực tiếp từ VPS; tự loại host dùng `X25519MLKEM768`
+- **Tìm SNI gần VPS** bằng [Reality-SNI-Finder](https://github.com/ShatakVPN/Reality-SNI-Finder), rồi chỉ thêm domain vượt check REALITY của Freedom vào pool
 - CLI: `sudo bash /root/xray/manage_xray.sh check-sni`
+- CLI: `sudo bash /root/xray/manage_xray.sh discover-sni`
 - Bổ sung và xác minh SNI riêng: `sudo bash /root/xray/manage_xray.sh add-sni example.com`
 
 ### Hysteria2

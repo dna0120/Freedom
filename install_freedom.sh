@@ -19,7 +19,7 @@ fi
 set -o pipefail
 SCRIPT_VERSION="5.21.2"
 # Freedom's own release counter; SCRIPT_VERSION tracks the AmneziaWG upstream.
-FREEDOM_VERSION="1.1.1"
+FREEDOM_VERSION="1.2.0"
 UPSTREAM_AWG_PIN="v5.21.2"
 UPSTREAM_AWG_REPO="bivlked/amneziawg-installer"
 
@@ -62,8 +62,8 @@ HY2_MANAGE_SCRIPT_PATH="$HY2_DIR/manage_hysteria.sh"
 # Format: sha256sum output (hex, 64 chars).
 COMMON_SCRIPT_SHA256="ca3bba0f989ab01775ad91803fb59089cb27039102b594b337bf4299d3f640b4"
 MANAGE_SCRIPT_SHA256="7d6c0a7f0a0983952e4b6a055f0553385d402cc7d017ffd91e1a4707485044d0"
-XRAY_COMMON_SCRIPT_SHA256="e212094c343a315255026a6ab52a8af418e05b3face420cc8d4f4f0e5bae53f7"
-XRAY_MANAGE_SCRIPT_SHA256="67af68332ee0efbdc93233e4292385de3fdecd0e6b6775c8d45fa9157a8a8fc0"
+XRAY_COMMON_SCRIPT_SHA256="7194ee26ab257acb79eba4a4f68cb5a5069c7d3e87835cd300d0fb45b20fd444"
+XRAY_MANAGE_SCRIPT_SHA256="880d35faffb67b1f55538d8eb613afa4cd2a37780a426544ec35a314d14e6bf2"
 HY2_COMMON_SCRIPT_SHA256="7b866be25e902f5c261a91d1d27b1dc5bb051ce24c16f78916276f07982e1ee4"
 HY2_MANAGE_SCRIPT_SHA256="033f1381a965a88a8f800933dab2dcb855096ec8dbd6673b627ee8ddf2877a5e"
 
@@ -543,7 +543,13 @@ ui_text() {
                 menu_xray_list) echo "10) Danh sách client Xray" ;;
                 menu_xray_revoke) echo "11) Thu hồi client Xray" ;;
                 menu_xray_status) echo "12) Trạng thái Xray" ;;
-                menu_xray_sni_scan) echo "Quét SNI REALITY khả dụng" ;;
+                menu_xray_sni_scan) echo "Quét / tìm SNI REALITY" ;;
+                menu_xray_sni_builtin) echo "1) Quét danh sách có sẵn (builtin + custom)" ;;
+                menu_xray_sni_discover) echo "2) Quét SNI gần VPS (Reality-SNI-Finder) rồi bổ sung" ;;
+                menu_xray_sni_both) echo "3) Cả hai" ;;
+                menu_xray_sni_back) echo "4) Quay lại" ;;
+                menu_xray_sni_pick) echo "Chọn [1-4]: " ;;
+                menu_xray_sni_aup) echo "Cảnh báo: quét IP lân cận có thể trái AUP nhà cung cấp. Chỉ chạy khi được phép." ;;
                 menu_xray_uninstall) echo "13) Gỡ Xray" ;;
                 menu_xray_reconfigure) echo "14) Cấu hình lại Xray" ;;
                 menu_hy2_install) echo "15) Cài / cấu hình Hysteria2" ;;
@@ -648,7 +654,13 @@ ui_text() {
                 menu_xray_list) echo "10) List Xray clients" ;;
                 menu_xray_revoke) echo "11) Revoke Xray client" ;;
                 menu_xray_status) echo "12) Show Xray status" ;;
-                menu_xray_sni_scan) echo "Scan available REALITY SNI targets" ;;
+                menu_xray_sni_scan) echo "Scan / discover REALITY SNI" ;;
+                menu_xray_sni_builtin) echo "1) Scan known list (builtin + custom)" ;;
+                menu_xray_sni_discover) echo "2) Discover nearby SNI (Reality-SNI-Finder) then import" ;;
+                menu_xray_sni_both) echo "3) Both" ;;
+                menu_xray_sni_back) echo "4) Back" ;;
+                menu_xray_sni_pick) echo "Select [1-4]: " ;;
+                menu_xray_sni_aup) echo "Warning: scanning neighbor IPs may violate your host AUP. Run only where allowed." ;;
                 menu_xray_uninstall) echo "13) Uninstall Xray" ;;
                 menu_xray_reconfigure) echo "14) Reconfigure Xray" ;;
                 menu_hy2_install) echo "15) Install / configure Hysteria2" ;;
@@ -4883,6 +4895,40 @@ menu_xray_show_status() {
     run_manage_xray status || true
 }
 
+menu_xray_sni_scan() {
+    if ! xray_stack_ready; then
+        echo "$(ui_text xray_not_installed)"
+        return 0
+    fi
+    local pick=""
+    echo ""
+    echo "$(ui_text menu_xray_sni_scan)"
+    echo "  $(ui_text menu_xray_sni_builtin)"
+    echo "  $(ui_text menu_xray_sni_discover)"
+    echo "  $(ui_text menu_xray_sni_both)"
+    echo "  $(ui_text menu_xray_sni_back)"
+    until [[ "$pick" =~ ^[1-4]$ ]]; do
+        read -rp "$(ui_text menu_xray_sni_pick)" pick < /dev/tty
+    done
+    case "$pick" in
+        1) run_manage_xray check-sni || true ;;
+        2)
+            echo "$(ui_text menu_xray_sni_aup)"
+            run_manage_xray discover-sni || true
+            ;;
+        3)
+            run_manage_xray check-sni || true
+            echo ""
+            echo "$(ui_text menu_xray_sni_aup)"
+            run_manage_xray discover-sni || true
+            echo ""
+            log "Re-scanning full candidate pool after import..."
+            run_manage_xray check-sni || true
+            ;;
+        4) return 0 ;;
+    esac
+}
+
 # ==============================================================================
 # Hysteria2 — parallel UDP/QUIC stack
 # ==============================================================================
@@ -5563,7 +5609,7 @@ manageMenu() {
     xray_list) menu_xray_list_clients ;;
     xray_revoke) menu_xray_revoke_client ;;
     xray_status) menu_xray_show_status ;;
-    xray_sni_scan) run_manage_xray check-sni ;;
+    xray_sni_scan) menu_xray_sni_scan ;;
     xray_uninstall) step_uninstall_xray ;;
     xray_reconfigure) step_reconfigure_xray ;;
     hy2_add) menu_hy2_add_client ;;

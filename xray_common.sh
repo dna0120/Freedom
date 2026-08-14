@@ -284,6 +284,114 @@ xray_add_sni_candidate() {
     log "Added verified REALITY SNI candidate: $host"
 }
 
+# Import a list of hostnames (one per line). Only hosts that pass the live
+# REALITY checks (TLS 1.3 + classic X25519, not post-quantum) are appended to
+# the custom candidate pool that xray_dest_candidates() already reads.
+xray_import_sni_file() {
+    local file="$1" host rc added=0 skipped=0 pq=0 bad=0
+    [[ -f "$file" ]] || { log_error "SNI list not found: $file"; return 1; }
+    mkdir -p "$(dirname "$XRAY_SNI_CANDIDATES_FILE")" || return 1
+    touch "$XRAY_SNI_CANDIDATES_FILE" || return 1
+    chmod 600 "$XRAY_SNI_CANDIDATES_FILE"
+    printf 'SNI\tSTATUS\tDETAIL\n'
+    while IFS= read -r host || [[ -n "$host" ]]; do
+        host="${host%%#*}"
+        host="${host//[[:space:]]/}"
+        host="${host%%:*}"
+        [[ -z "$host" ]] && continue
+        [[ "$host" =~ ^([A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}$ ]] || continue
+        case "$host" in
+            *cloudflare*|*cloudfront*|*akamai*|*edgekey*|*edgesuite*)
+                printf '%s\tSKIP\tCDN generic / unsuitable for REALITY dest\n' "$host"
+                skipped=$((skipped + 1))
+                continue
+                ;;
+        esac
+        xray_tls_ping_ok "$host"
+        rc=$?
+        case "$rc" in
+            0)
+                if grep -Fqx "$host" "$XRAY_SNI_CANDIDATES_FILE" 2>/dev/null; then
+                    printf '%s\tAVAILABLE\talready in candidate list\n' "$host"
+                else
+                    printf '%s\n' "$host" >> "$XRAY_SNI_CANDIDATES_FILE"
+                    printf '%s\tAVAILABLE\tadded to candidate list\n' "$host"
+                    added=$((added + 1))
+                fi
+                ;;
+            2)
+                printf '%s\tPOST_QUANTUM\tX25519MLKEM768 (not usable by REALITY)\n' "$host"
+                pq=$((pq + 1))
+                ;;
+            *)
+                printf '%s\tUNREACHABLE\tTLS 1.3 / classic X25519 check failed\n' "$host"
+                bad=$((bad + 1))
+                ;;
+        esac
+    done < "$file"
+    printf 'SUMMARY\tADDED=%d\tPOST_QUANTUM=%d\tUNREACHABLE=%d\tSKIP=%d\n' \
+        "$added" "$pq" "$bad" "$skipped"
+    log "Custom REALITY SNI pool: $XRAY_SNI_CANDIDATES_FILE"
+    (( added > 0 || pq + bad + skipped > 0 ))
+}
+
+# Discover nearby HTTPS domains with Reality-SNI-Finder
+# (https://github.com/ShatakVPN/Reality-SNI-Finder), then keep only those that
+# Freedom's live REALITY checks accept. Scanning neighbor /24s may violate a
+# host's AUP — we use conservative defaults and require an explicit opt-in.
+xray_discover_nearby_sni() {
+    local work="${XRAY_DIR}/sni-finder"
+    local py_url="https://raw.githubusercontent.com/ShatakVPN/Reality-SNI-Finder/main/reality_sni_finder.py"
+    local py="$work/reality_sni_finder.py"
+    local out="$work/domains.txt"
+    local miss=()
+
+    log_warn "Nearby SNI discovery scans TCP/443 on this VPS's /24 and neighbor blocks (masscan)."
+    log_warn "Only run this where your provider allows it. Defaults are conservative."
+
+    mkdir -p "$work" || return 1
+    chmod 700 "$work"
+
+    for b in python3 masscan curl openssl; do
+        command -v "$b" >/dev/null 2>&1 || miss+=("$b")
+    done
+    if ((${#miss[@]})); then
+        log "Installing missing tools: ${miss[*]}"
+        if command -v apt-get >/dev/null 2>&1; then
+            DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${miss[@]}" >/dev/null 2>&1 \
+                || { log_error "Could not install: ${miss[*]}"; return 1; }
+        else
+            log_error "Install these tools first: ${miss[*]}"
+            return 1
+        fi
+    fi
+
+    if ! curl -fLso "$py" --max-time 60 --retry 2 "$py_url"; then
+        log_error "Failed to download Reality-SNI-Finder engine from GitHub"
+        return 1
+    fi
+    chmod 700 "$py"
+
+    # Conservative defaults from the upstream README; override via env if needed.
+    (
+        cd "$work" || exit 1
+        export RSF_BLOCKS="${RSF_BLOCKS:-6}"
+        export RSF_RATE="${RSF_RATE:-4000}"
+        export RSF_TIMEOUT="${RSF_TIMEOUT:-8}"
+        export RSF_THREADS="${RSF_THREADS:-64}"
+        export RSF_VERIFY_H2="${RSF_VERIFY_H2:-1}"
+        export RSF_INCLUDE_GENERIC="${RSF_INCLUDE_GENERIC:-0}"
+        [[ -n "${RSF_REF_IP:-}" ]] && export RSF_REF_IP
+        log "Running Reality-SNI-Finder (blocks=${RSF_BLOCKS}, rate=${RSF_RATE} pps)..."
+        python3 "$py"
+    ) || { log_error "Reality-SNI-Finder finished with errors (see above)."; return 1; }
+
+    [[ -s "$out" ]] || { log_error "No domains discovered ($out empty)."; return 1; }
+    log "Discovered $(wc -l < "$out" | tr -d ' ') nearby candidates — verifying for REALITY..."
+    xray_import_sni_file "$out"
+}
+
 xray_pick_dest() {
     local cand rc fallback=""
     if [[ -n "${XRAY_DEST:-}" ]]; then
