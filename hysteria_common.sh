@@ -138,13 +138,29 @@ hy2_rand_password() {
 hy2_generate_self_signed() {
     local cn="${1:-hysteria.local}"
     hy2_ensure_dirs || return 1
+    # A SAN is required by modern TLS stacks; CN alone is no longer accepted.
     openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
         -keyout "$HY2_CERT_DIR/server.key" \
         -out "$HY2_CERT_DIR/server.crt" \
-        -subj "/CN=${cn}" >/dev/null 2>&1 || return 1
+        -subj "/CN=${cn}" \
+        -addext "subjectAltName=DNS:${cn}" >/dev/null 2>&1 \
+        || openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
+            -keyout "$HY2_CERT_DIR/server.key" \
+            -out "$HY2_CERT_DIR/server.crt" \
+            -subj "/CN=${cn}" >/dev/null 2>&1 \
+        || return 1
     chmod 600 "$HY2_CERT_DIR/server.key" "$HY2_CERT_DIR/server.crt"
     HY2_TLS_CERT="$HY2_CERT_DIR/server.crt"
     HY2_TLS_KEY="$HY2_CERT_DIR/server.key"
+}
+
+# Certificate fingerprint for pinning. Clients that refuse to trust a
+# self-signed certificate (most iOS apps) accept it when it is pinned.
+hy2_cert_fingerprint() {
+    local cert="${1:-${HY2_TLS_CERT:-}}" out
+    [[ -f "$cert" ]] || return 1
+    out="$(openssl x509 -in "$cert" -noout -fingerprint -sha256 2>/dev/null)" || return 1
+    printf '%s' "${out#*=}"
 }
 
 hy2_issue_acme_or_self() {
@@ -296,7 +312,7 @@ hy2_apply_config() {
 
 hy2_share_link() {
     local name="$1" user="$2" pass="$3"
-    local host sni insecure enc_name enc_obfs
+    local host sni insecure enc_name enc_obfs fp query
     host="$(hy2_get_public_ip 2>/dev/null || true)"
     [[ -n "$host" ]] || host="${HY2_ENDPOINT:-127.0.0.1}"
     if [[ -n "${HY2_DOMAIN:-}" && "${HY2_INSECURE:-1}" == "0" ]]; then
@@ -305,16 +321,18 @@ hy2_share_link() {
     sni="${HY2_SNI:-$host}"
     insecure="${HY2_INSECURE:-1}"
     enc_name="$(hy2_urlencode "$name")"
+    query="insecure=${insecure}&sni=$(hy2_urlencode "$sni")"
+    if [[ "$insecure" == "1" ]]; then
+        fp="$(hy2_cert_fingerprint 2>/dev/null || true)"
+        [[ -n "$fp" ]] && query+="&pinSHA256=$(hy2_urlencode "$fp")"
+    fi
     if [[ -n "${HY2_OBFS:-}" ]]; then
         enc_obfs="$(hy2_urlencode "$HY2_OBFS")"
-        printf 'hysteria2://%s:%s@%s:%s/?insecure=%s&sni=%s&obfs=salamander&obfs-password=%s#%s\n' \
-            "$(hy2_urlencode "$user")" "$(hy2_urlencode "$pass")" \
-            "$host" "$HY2_PORT" "$insecure" "$(hy2_urlencode "$sni")" "$enc_obfs" "$enc_name"
-    else
-        printf 'hysteria2://%s:%s@%s:%s/?insecure=%s&sni=%s#%s\n' \
-            "$(hy2_urlencode "$user")" "$(hy2_urlencode "$pass")" \
-            "$host" "$HY2_PORT" "$insecure" "$(hy2_urlencode "$sni")" "$enc_name"
+        query+="&obfs=salamander&obfs-password=${enc_obfs}"
     fi
+    printf 'hysteria2://%s:%s@%s:%s/?%s#%s\n' \
+        "$(hy2_urlencode "$user")" "$(hy2_urlencode "$pass")" \
+        "$host" "$HY2_PORT" "$query" "$enc_name"
 }
 
 hy2_write_client_files() {
@@ -327,8 +345,11 @@ hy2_write_client_files() {
     printf 'HY2_CLIENT_NAME=%s\nHY2_CLIENT_USER=%s\nHY2_CLIENT_PASS=%s\n' \
         "$name" "$user" "$pass" > "$HY2_CLIENTS_DIR/${name}.meta"
     chmod 600 "$HY2_CLIENTS_DIR/${name}.meta"
-    local insecure_yaml="false"
-    [[ "${HY2_INSECURE:-1}" == "1" ]] && insecure_yaml="true"
+    local insecure_yaml="false" fp=""
+    if [[ "${HY2_INSECURE:-1}" == "1" ]]; then
+        insecure_yaml="true"
+        fp="$(hy2_cert_fingerprint 2>/dev/null || true)"
+    fi
     tmp="$(hy2_mktemp "$HY2_CLIENTS_DIR")" || return 1
     cat > "$tmp" <<EOF
 server: $(hy2_yaml_escape "${host}:${HY2_PORT}")
@@ -337,6 +358,9 @@ tls:
   sni: $(hy2_yaml_escape "$HY2_SNI")
   insecure: ${insecure_yaml}
 EOF
+    if [[ -n "$fp" ]]; then
+        printf '  pinSHA256: %s\n' "$(hy2_yaml_escape "$fp")" >> "$tmp"
+    fi
     if [[ -n "${HY2_OBFS:-}" ]]; then
         cat >> "$tmp" <<EOF
 obfs:
@@ -443,6 +467,9 @@ hy2_status() {
         echo "Salamander OBFS: $( [[ -n ${HY2_OBFS:-} ]] && echo enabled || echo disabled )"
         echo "Masquerade: ${HY2_MASQUERADE}"
         echo "TLS cert: ${HY2_TLS_CERT}"
+        if [[ "${HY2_INSECURE:-1}" == "1" ]]; then
+            echo "Cert pin (SHA256): $(hy2_cert_fingerprint 2>/dev/null || echo unavailable)"
+        fi
     else
         echo "Config: not found ($HY2_CONFIG_FILE)"
     fi
