@@ -19,7 +19,7 @@ fi
 set -o pipefail
 SCRIPT_VERSION="5.21.2"
 # Freedom's own release counter; SCRIPT_VERSION tracks the AmneziaWG upstream.
-FREEDOM_VERSION="1.1.0"
+FREEDOM_VERSION="1.1.1"
 UPSTREAM_AWG_PIN="v5.21.2"
 UPSTREAM_AWG_REPO="bivlked/amneziawg-installer"
 
@@ -5677,6 +5677,26 @@ _extract_quoted_assign() {
     awk -F= -v k="$key" '$1==k { gsub(/"/, "", $2); print $2; exit }' "$file"
 }
 
+# Hash of the installer file currently executing. Returns non-zero when the
+# source is a process substitution / pipe (bash <(curl …)): those fds are not
+# reliable to sha256, and a wrong hash would falsely claim "differs from GitHub".
+_installer_running_hash() {
+    local src="${BASH_SOURCE[0]:-}" ft hash
+    [[ -n "$src" && -e "$src" ]] || return 1
+    case "$src" in
+        /dev/fd/*|/proc/self/fd/*) return 1 ;;
+    esac
+    if command -v stat >/dev/null 2>&1; then
+        ft="$(stat -c %F "$src" 2>/dev/null || true)"
+        [[ "$ft" == "regular file" || "$ft" == "regular empty file" ]] || return 1
+    elif [[ ! -f "$src" ]]; then
+        return 1
+    fi
+    hash="$(sha256sum "$src" 2>/dev/null | awk '{print $1}')"
+    [[ -n "$hash" ]] || return 1
+    printf '%s\n' "$hash"
+}
+
 _github_latest_tag() {
     local repo="$1" json tag
     json="$(curl -fsSL --max-time 20 -H "User-Agent: Freedom-updater" \
@@ -5707,15 +5727,18 @@ step_check_updates() {
         remote_pin="$(_extract_quoted_assign "$remote_installer" UPSTREAM_AWG_PIN)"
         remote_freedom="$(_extract_quoted_assign "$remote_installer" FREEDOM_VERSION)"
         remote_hash="$(sha256sum "$remote_installer" | awk '{print $1}')"
-        if [[ -f "${BASH_SOURCE[0]}" ]]; then
-            local_hash="$(sha256sum "${BASH_SOURCE[0]}" 2>/dev/null | awk '{print $1}')"
-        else
-            local_hash=""
-        fi
+        local_hash="$(_installer_running_hash 2>/dev/null || true)"
         log "GitHub Freedom version: ${remote_freedom:-unknown} (SCRIPT_VERSION ${remote_ver:-unknown})"
         [[ -n "$remote_pin" ]] && log "GitHub Freedom UPSTREAM_AWG_PIN: $remote_pin"
         if [[ -n "$local_hash" && "$local_hash" == "$remote_hash" ]]; then
             log "Freedom installer matches GitHub main."
+        elif [[ -z "$local_hash" ]]; then
+            # bash <(curl …) — compare version, not the unreadable pipe hash.
+            if [[ -n "$remote_freedom" && "$remote_freedom" == "$FREEDOM_VERSION" ]]; then
+                log "Freedom installer matches GitHub main (v${FREEDOM_VERSION})."
+            else
+                log_warn "GitHub Freedom is v${remote_freedom:-unknown}; this running copy is v${FREEDOM_VERSION} (refresh with --update)."
+            fi
         else
             log_warn "Freedom installer on GitHub differs from this running copy (refresh with --update)."
         fi
@@ -5858,10 +5881,10 @@ step_apply_updates() {
     hc_sha="$(_extract_quoted_assign "$new_installer" HY2_COMMON_SCRIPT_SHA256)"
     hm_sha="$(_extract_quoted_assign "$new_installer" HY2_MANAGE_SCRIPT_SHA256)"
 
-    local running_hash="" fresh_hash saved_tmp
+    local running_hash="" fresh_hash saved_tmp new_freedom need_reexec=0
     fresh_hash="$(sha256sum "$new_installer" | awk '{print $1}')"
-    [[ -f "${BASH_SOURCE[0]}" ]] && \
-        running_hash="$(sha256sum "${BASH_SOURCE[0]}" 2>/dev/null | awk '{print $1}')"
+    running_hash="$(_installer_running_hash 2>/dev/null || true)"
+    new_freedom="$(_extract_quoted_assign "$new_installer" FREEDOM_VERSION)"
 
     # Rename instead of overwrite: this script may itself be $AWG_DIR/install_freedom.sh,
     # and bash keeps reading the file it started from while it runs.
@@ -5874,14 +5897,22 @@ step_apply_updates() {
         || { rm -f "$saved_tmp"; die "Cannot save the new installer"; }
     log "Saved installer copy: $AWG_DIR/install_freedom.sh"
 
-    # The rest of the update (including migrations for older layouts) must run
-    # from the version being installed, not from the copy that started it.
+    # Hand over to the downloaded installer when this process is older or was
+    # started from a regular on-disk file that no longer matches GitHub.
+    # A curl/pipe launch with the same FREEDOM_VERSION stays in-process so we
+    # do not re-prompt for language.
     if [[ "${UPDATE_SELF_REEXEC:-0}" -eq 0 ]]; then
-        if [[ "$running_hash" != "$fresh_hash" ]]; then
+        if [[ -n "$running_hash" && "$running_hash" != "$fresh_hash" ]]; then
+            need_reexec=1
+        elif [[ -z "$running_hash" && -n "$new_freedom" && "$new_freedom" != "$FREEDOM_VERSION" ]]; then
+            need_reexec=1
+        fi
+        if [[ "$need_reexec" -eq 1 ]]; then
             rm -rf "$tmpdir"
             log "Continuing the update with the freshly downloaded installer..."
             local -a reexec_args=(--update)
             [[ "${AUTO_YES:-0}" -eq 1 ]] && reexec_args+=(--yes)
+            [[ -n "${UI_LANG:-}" ]] && reexec_args+=(--lang="$UI_LANG")
             UPDATE_SELF_REEXEC=1 exec bash "$AWG_DIR/install_freedom.sh" "${reexec_args[@]}"
         fi
     fi
