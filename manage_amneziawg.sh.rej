@@ -1,0 +1,100 @@
+--- manage_amneziawg.sh	2026-08-22 12:33:40.890412130 +0000
++++ manage_amneziawg.sh	2026-08-22 12:33:40.992412516 +0000
+@@ -8,14 +8,14 @@
+ # ==============================================================================
+ # Скрипт для управления пользователями (пирами) AmneziaWG 2.0
+ # Автор: @bivlked
+-# Версия: 5.21.2
+-# Дата: 2026-07-22
++# Версия: 5.27.0
++# Дата: 2026-08-14
+ # Репозиторий: https://github.com/bivlked/amneziawg-installer
+ # ==============================================================================
+ 
+ # --- Безопасный режим и Константы ---
+ # shellcheck disable=SC2034
+-SCRIPT_VERSION="5.21.2"
++SCRIPT_VERSION="5.27.0"
+ set -o pipefail
+ AWG_DIR="/root/awg"
+ SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"
+@@ -957,6 +957,10 @@
+ 
+     # Успех — rollback не нужен, trap выполнит только cleanup
+     _restore_ok=1
++    # Восстановление подменило awg0.conf и пересоздало интерфейс, поэтому снимок
++    # набора device-параметров надо взять заново: он должен описывать то, что
++    # стоит на живом интерфейсе СЕЙЧАС, а не до восстановления.
++    awg_record_device_params
+     log "Восстановление завершено."
+     return 0
+ }
+@@ -1221,7 +1226,17 @@
+     # Паттерн из diagnose: точное имя модуля в первом столбце lsmod.
+     if lsmod 2>/dev/null | awk '$1 == "amneziawg" {f=1} END {exit !f}'; then
+         _c_mod=true
+-        log " - Модуль amneziawg загружен."
++        # Версия модуля: у линии 3.0 строка начинается с 3., у 2.0 - с 1.
++        # (имена тегов upstream исторически не совпадают с версией протокола,
++        #  поэтому печатаем сырое значение и не выводим протокол по догадке).
++        # awg_module_version спрашивает ЗАГРУЖЕННЫЙ модуль, а modinfo (файл на
++        # диске) оставляет вторым путём - см. пояснение у функции в awg_common.sh.
++        _c_mod_ver=$(awg_module_version)
++        if [[ -n "$_c_mod_ver" ]]; then
++            log " - Модуль amneziawg загружен (версия $_c_mod_ver)."
++        else
++            log " - Модуль amneziawg загружен."
++        fi
+     else
+         # WARN, не ok=0: на userspace-инсталляциях (amneziawg-go, LXC) модуля
+         # нет и не будет, а сломанный kernel-путь и так валит сервис/интерфейс.
+@@ -1341,7 +1356,16 @@
+ 
+     # 1. Kernel module
+     if lsmod 2>/dev/null | awk '$1 == "amneziawg" {f=1} END {exit !f}'; then
+-        _diag_line OK "Модуль ядра amneziawg загружен"; ok=$((ok+1))
++        local _d_mod_ver
++        _d_mod_ver=$(awg_module_version)
++        if [[ "$_d_mod_ver" == 3.* ]]; then
++            _diag_line OK "Модуль ядра amneziawg загружен (AmneziaWG 3.0, $_d_mod_ver)"
++        elif [[ -n "$_d_mod_ver" ]]; then
++            _diag_line OK "Модуль ядра amneziawg загружен ($_d_mod_ver)"
++        else
++            _diag_line OK "Модуль ядра amneziawg загружен"
++        fi
++        ok=$((ok+1))
+     else
+         _diag_line FAIL "Модуль ядра amneziawg НЕ загружен"
+         echo "        Fix: sudo bash $0 repair-module"
+@@ -2123,6 +2147,9 @@
+ 
+     regen)
+         log "Перегенерация файлов конфигурации и QR..."
++        # Правка AWG_* в awgsetup_cfg.init после установки на клиентов не влияет
++        # (источник истины - awg0.conf). Раньше это проходило молча (#196).
++        warn_awg_init_drift
+         # --reset-routes (Issue #170): передаём флаг в regenerate_client через
+         # ENV - обычный regen сохраняет индивидуальные AllowedIPs клиентов, с
+         # флагом ставит всем глобальный режим из awgsetup_cfg.init.
+@@ -2250,6 +2278,9 @@
+ 
+     restart)
+         log "Перезапуск сервиса..."
++        # Предупреждение ДО confirm_action: при --yes/AWG_YES=1 подтверждения не
++        # будет, а отрезать себя от сервера можно и неинтерактивным запуском.
++        awg_warn_interface_disruption
+         if ! confirm_action "перезапустить" "сервис"; then exit 1; fi
+         # Перед systemctl restart убеждаемся, что модуль ядра загружен (mode=module-only,
+         # т.к. сам systemctl ниже стартует unit явно — повторный start от ensure избыточен).
+@@ -2262,6 +2293,11 @@
+             while IFS= read -r line; do log_error "  $line"; done <<< "$status_out"
+             exit 1
+         else
++            # Интерфейс пересоздан - снимок набора device-параметров обязан
++            # догнать конфиг. Иначе apply_config сравнивал бы с устаревшим
++            # набором и либо предупреждал впустую, либо ПРОПУСТИЛ бы будущее
++            # снятие молча (если этим перезапуском параметр как раз добавили).
++            awg_record_device_params
+             log "Сервис перезапущен."
+             _jactive=false
+             systemctl is-active --quiet awg-quick@awg0 2>/dev/null && _jactive=true
