@@ -6,7 +6,7 @@
       "name": "AmneziaWG installer (bivlked)",
       "repo": "bivlked/amneziawg-installer",
       "pinned_tag": "v5.21.2",
-      "latest_observed": "v5.21.2",
+      "latest_observed": "v5.27.0",
       "track": "releases",
       "files": [
         "install_amneziawg_en.sh",
@@ -20,7 +20,7 @@
       "name": "Xray-core",
       "repo": "XTLS/Xray-core",
       "pinned_tag": "",
-      "latest_observed": "",
+      "latest_observed": "v26.3.27",
       "track": "releases",
       "note": "VPS installs latest via Xray-install. latest_observed updated daily by CI."
     },
@@ -29,7 +29,7 @@
       "name": "Hysteria2",
       "repo": "apernet/hysteria",
       "pinned_tag": "",
-      "latest_observed": "",
+      "latest_observed": "app/v2.12.1",
       "track": "releases",
       "note": "VPS installs latest via get.hy2.sh. latest_observed updated daily by CI."
     },
