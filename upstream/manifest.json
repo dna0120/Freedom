@@ -6,29 +6,32 @@
       "name": "AmneziaWG installer (bivlked)",
       "repo": "bivlked/amneziawg-installer",
       "pinned_tag": "v5.21.2",
+      "latest_observed": "v5.21.2",
       "track": "releases",
       "files": [
         "install_amneziawg_en.sh",
         "awg_common.sh",
         "manage_amneziawg.sh"
       ],
-      "note": "Freedom forked this installer. Do not auto-merge; cherry-pick fixes by hand."
+      "note": "Freedom forked this installer. CI applies bivlked→bivlked diffs onto English helpers; manual review on patch failure."
     },
     {
       "id": "xray-core",
       "name": "Xray-core",
       "repo": "XTLS/Xray-core",
       "pinned_tag": "",
+      "latest_observed": "",
       "track": "releases",
-      "note": "VPS installs latest via Xray-install. Pin is informational."
+      "note": "VPS installs latest via Xray-install. latest_observed updated daily by CI."
     },
     {
       "id": "hysteria",
       "name": "Hysteria2",
       "repo": "apernet/hysteria",
       "pinned_tag": "",
+      "latest_observed": "",
       "track": "releases",
-      "note": "VPS installs latest via get.hy2.sh. Pin is informational."
+      "note": "VPS installs latest via get.hy2.sh. latest_observed updated daily by CI."
     },
     {
       "id": "angristan",

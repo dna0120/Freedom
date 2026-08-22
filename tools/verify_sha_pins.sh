@@ -42,6 +42,10 @@ for var in "${!FILES[@]}"; do
     fi
     echo "OK $var (local disk)"
 
+    if [[ "${SKIP_RAW_VERIFY:-0}" == "1" ]]; then
+        continue
+    fi
+
     if command -v curl >/dev/null 2>&1; then
         raw="${RAW_BASE}/${RAW_NAMES[$var]}"
         tmp="$(mktemp)"

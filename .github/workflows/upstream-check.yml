@@ -1,21 +1,22 @@
-name: Upstream check
+name: Upstream automation
 
 on:
   schedule:
-    - cron: "0 6 * * 1"
+    - cron: "0 6 * * *"
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+  pull-requests: write
   issues: write
 
 jobs:
-  check:
+  check-and-sync:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check upstream sources
+      - name: Upstream check (report)
         id: check
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -24,9 +25,9 @@ jobs:
           bash tools/check_upstream.sh
           rc=$?
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
-          exit "$rc"
+          exit 0
 
-      - name: Upload report
+      - name: Upload upstream report
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -41,7 +42,7 @@ jobs:
         run: |
           TITLE="Upstream updates available"
           BODY_FILE=upstream/REPORT.md
-          [[ -f "$BODY_FILE" ]] || { echo "No report"; exit 0; }
+          [[ -f "$BODY_FILE" ]] || exit 0
           ISSUE=$(gh issue list --state open --search "$TITLE in:title" --json number,title \
             --jq '.[] | select(.title=="'"$TITLE"'") | .number' | head -n1)
           if [[ -n "$ISSUE" ]]; then
@@ -51,3 +52,51 @@ jobs:
             gh issue create --title "$TITLE" --body-file "$BODY_FILE"
             echo "Opened new issue"
           fi
+
+      - name: Prepare automated upstream sync
+        id: sync
+        run: |
+          set +e
+          bash tools/sync_upstream_pr.sh
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          if [[ "$rc" -eq 1 ]]; then exit 1; fi
+          exit 0
+
+      - name: Verify SHA256 pins (when AWG helpers may have changed)
+        if: steps.sync.outputs.rc == '3'
+        env:
+          SKIP_RAW_VERIFY: "1"
+        run: bash tools/verify_sha_pins.sh
+
+      - name: Bash syntax check (synced tree)
+        if: steps.sync.outputs.rc == '3'
+        run: |
+          shopt -s globstar nullglob
+          for f in *.sh tools/*.sh; do
+            [[ -f "$f" ]] || continue
+            bash -n "$f"
+          done
+
+      - name: Create or update Pull Request
+        if: steps.sync.outputs.rc == '3'
+        id: cpr
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore(upstream): automated upstream sync"
+          title: "chore(upstream): automated upstream sync"
+          body-path: upstream/SYNC_PR_BODY.md
+          branch: auto/upstream-sync
+          delete-branch: true
+          labels: |
+            upstream
+            automated
+
+      - name: Enable auto-merge when checks pass
+        if: steps.sync.outputs.rc == '3' && steps.cpr.outputs.pull-request-number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr merge "${{ steps.cpr.outputs.pull-request-number }}" --auto --squash \
+            || echo "Auto-merge not enabled (branch protection); merge the PR manually."

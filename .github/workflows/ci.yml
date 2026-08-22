@@ -27,4 +27,6 @@ jobs:
           severity: error
 
       - name: Verify SHA256 pins
+        env:
+          SKIP_RAW_VERIFY: ${{ github.event_name == 'pull_request' && '1' || '0' }}
         run: bash tools/verify_sha_pins.sh

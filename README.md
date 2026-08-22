@@ -117,4 +117,4 @@ Xray/Hysteria: sao lưu thư mục `/root/xray` và `/root/hysteria` (client + `
 
 Upstream: [UPSTREAM.md](UPSTREAM.md). License: [LICENSE](LICENSE), [NOTICE](NOTICE).
 
-Maintainer: `bash tools/verify_sha_pins.sh`, `bash tools/check_upstream.sh`.
+Maintainer: `bash tools/verify_sha_pins.sh`, `bash tools/check_upstream.sh`, `bash tools/sync_upstream_pr.sh`. GitHub Actions syncs upstream daily (see [UPSTREAM.md](UPSTREAM.md)).

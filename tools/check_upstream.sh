@@ -190,9 +190,9 @@ fi
     echo ""
     echo "## Notes"
     echo ""
-    echo "- Do **not** auto-merge bivlked into Freedom. Cherry-pick from the vendor snapshot."
-    echo "- Xray / Hysteria pins are informational; VPS \`--update\` refreshes those binaries."
-    echo "- See [UPSTREAM.md](../UPSTREAM.md)."
+    echo "- Do **not** copy bivlked \`install_amneziawg_en.sh\` wholesale — Freedom uses \`install_freedom.sh\`."
+    echo "- Daily CI applies bivlked→bivlked diffs onto English AWG helpers; see [UPSTREAM.md](../UPSTREAM.md)."
+    echo "- Xray / Hysteria \`latest_observed\` is informational; VPS \`--update\` refreshes those binaries."
 } >> "$REPORT"
 
 echo "Wrote $REPORT"
