@@ -13,7 +13,7 @@ Script cài đặt và quản lý **AmneziaWG**, **Xray (VLESS + REALITY / CDN)*
 **Khuyến nghị (release ghim):**
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/dna0120/Freedom/v1.3.0/install_freedom.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/dna0120/Freedom/v1.3.1/install_freedom.sh)
 ```
 
 **Bleeding edge (`main`, có thể thay đổi bất cứ lúc nào):**
