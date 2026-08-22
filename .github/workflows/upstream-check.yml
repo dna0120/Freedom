@@ -14,7 +14,7 @@ jobs:
   check-and-sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Upstream check (report)
         id: check
@@ -91,9 +91,6 @@ jobs:
           body-path: upstream/SYNC_PR_BODY.md
           branch: auto/upstream-sync
           delete-branch: true
-          labels: |
-            upstream
-            automated
 
       - name: Enable auto-merge when checks pass
         if: steps.sync.outputs.rc == '3' && steps.cpr.outputs.pull-request-number != ''
