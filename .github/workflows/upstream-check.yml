@@ -17,12 +17,14 @@ jobs:
 
       - name: Check upstream sources
         id: check
-        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set +e
           bash tools/check_upstream.sh
-          echo "rc=$?" >> "$GITHUB_OUTPUT"
-          exit 0
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit "$rc"
 
       - name: Upload report
         if: always()

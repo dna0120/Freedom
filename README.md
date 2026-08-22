@@ -2,9 +2,21 @@
 
 Script cài đặt và quản lý **AmneziaWG**, **Xray (VLESS + REALITY / CDN)** và **Hysteria2** trên cùng một VPS, menu kiểu angristan.
 
-## Quick Install (1 lệnh)
+## Yêu cầu
 
-Chạy bằng root:
+- Ubuntu 24.04 / 25.10 / 26.04 hoặc Debian 12 / 13
+- VPS KVM/bare-metal (AmneziaWG cần kernel module)
+- Quyền root
+
+## Quick Install
+
+**Khuyến nghị (release ghim):**
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/dna0120/Freedom/v1.3.0/install_freedom.sh)
+```
+
+**Bleeding edge (`main`, có thể thay đổi bất cứ lúc nào):**
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/dna0120/Freedom/main/install_freedom.sh)
@@ -13,12 +25,10 @@ bash <(curl -fsSL https://raw.githubusercontent.com/dna0120/Freedom/main/install
 Không phải root:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dna0120/Freedom/main/install_freedom.sh -o freedom.sh && sudo bash freedom.sh
+curl -fsSL https://raw.githubusercontent.com/dna0120/Freedom/v1.3.0/install_freedom.sh -o freedom.sh && sudo bash freedom.sh
 ```
 
-Script tự tải các file phụ nên chỉ cần đúng một lệnh trên.
-
-Lần chạy đầu trên máy sạch, script hỏi ngay muốn cài gì:
+Lần chạy đầu trên máy sạch, script hỏi muốn cài gì:
 
 ```
 1) AmneziaWG
@@ -28,75 +38,82 @@ Lần chạy đầu trên máy sạch, script hỏi ngay muốn cài gì:
 5) Cả ba
 ```
 
-Chọn 2 hoặc 3 thì bỏ qua hoàn toàn phần cài AmneziaWG. Lựa chọn được ghi nhớ nên nếu AmneziaWG cần reboot giữa chừng, chạy lại lệnh trên sẽ cài tiếp đúng các stack đã chọn. Dùng `--yes` hoặc `--force` thì không hỏi và mặc định AmneziaWG như cũ.
+Chọn 2 hoặc 3 thì bỏ qua hoàn toàn phần cài AmneziaWG. Dùng `--yes` hoặc `--force` thì không hỏi và mặc định AmneziaWG.
 
 ## Dùng lại sau khi cài
 
-Chạy lại đúng lệnh trên (hoặc `sudo bash install_freedom.sh`) — mở menu quản lý.
-
-Menu được đánh số động: chỉ hiện thao tác của stack đã cài; stack còn thiếu chỉ có một mục **Cài thêm**.
+Chạy lại cùng lệnh cài — mở **menu quản lý động**: chỉ hiện stack đã cài; **cập nhật luôn là mục cuối** (không cố định số 22).
 
 ### AmneziaWG
 - Thêm / list / thu hồi client
 - Trạng thái, gỡ, cấu hình lại
 
 ### Xray
-- Cài Xray: Vision + XHTTP + **gRPC** (REALITY), tùy chọn **CDN/TLS front**
-- Thêm client — Vision / XHTTP / gRPC / CDN-XHTTP / CDN-gRPC, xuất QR + `vless://` + JSON
-- List / thu hồi / trạng thái / gỡ / cấu hình lại
-- **Quét SNI REALITY khả dụng** trực tiếp từ VPS; tự loại host dùng `X25519MLKEM768`
-- **Tìm SNI gần VPS** bằng [Reality-SNI-Finder](https://github.com/ShatakVPN/Reality-SNI-Finder), rồi chỉ thêm domain vượt check REALITY của Freedom vào pool
-- CLI: `sudo bash /root/xray/manage_xray.sh check-sni`
-- CLI: `sudo bash /root/xray/manage_xray.sh discover-sni`
-- Bổ sung và xác minh SNI riêng: `sudo bash /root/xray/manage_xray.sh add-sni example.com`
+- Vision + XHTTP + gRPC (REALITY), tuỳ chọn CDN/TLS front
+- Quét SNI REALITY; tìm SNI gần VPS ([Reality-SNI-Finder](https://github.com/ShatakVPN/Reality-SNI-Finder))
+- CLI: `sudo bash /root/xray/manage_xray.sh check-sni|discover-sni|add-sni`
 
 ### Hysteria2
-- Cài Hysteria2 (QUIC/UDP, masquerade, Salamander OBFS mặc định bật)
-- Thêm / list / thu hồi / trạng thái client (`hysteria2://` + YAML + QR)
-- Gỡ / cấu hình lại
+- QUIC/UDP, masquerade, Salamander OBFS
+- `hysteria2://` + YAML + QR
 
-Hoặc:
+## Cờ CLI hữu ích
+
+| Cờ | Mô tả |
+|---|---|
+| `--lang=en\|vi` | Ngôn ngữ menu |
+| `--diagnostic` | Báo cáo chẩn đoán |
+| `--check-updates` / `--update` | Kiểm tra / áp dụng cập nhật |
+| `--install-xray` / `--install-hysteria` | Cài từng stack |
+| `--xray-domain=FQDN` / `--hy2-domain=FQDN` | Domain TLS/ACME |
 
 ```bash
-sudo ./install_freedom.sh --install-xray
 sudo ./install_freedom.sh --install-xray --xray-domain=vpn.example.com
-sudo ./install_freedom.sh --install-hysteria
-sudo ./install_freedom.sh --install-hysteria --hy2-domain=hy2.example.com
-sudo ./install_freedom.sh --uninstall-xray
-sudo ./install_freedom.sh --uninstall-hysteria
 sudo ./install_freedom.sh --check-updates
 sudo ./install_freedom.sh --update
 ```
 
-### Cập nhật
+## Cập nhật
 
-- **`--check-updates`**: báo version script Freedom trên GitHub, pin bivlked vs latest, Xray/Hysteria2 local vs GitHub, và `apt-cache policy` cho `amneziawg-dkms` / `amneziawg-tools` (không tự `apt upgrade`).
-- **`--update` / mục cập nhật trong menu**: tải lại helper scripts (SHA256), nâng cấp binary Xray và Hysteria2, giữ nguyên user/UUID/mật khẩu của client. Không merge tự động code AmneziaWG từ bivlked — xem [UPSTREAM.md](UPSTREAM.md).
-- Sau khi cập nhật, script tự vá cấu hình cũ: đổi REALITY dest nếu domain đó đã bật post-quantum, cấp lại chứng chỉ self-signed thiếu SAN cho Hysteria2, và phát hành lại profile client (link/QR mới, cần quét lại trên máy).
-- `FREEDOM_VERSION` là version của repo này; `SCRIPT_VERSION` bám theo bản AmneziaWG installer của bivlked.
+- Tải lại helper scripts (**SHA256 bắt buộc**), nâng binary Xray/Hysteria2, giữ UUID/mật khẩu client
+- Tự vá: REALITY dest post-quantum, cert Hysteria thiếu SAN, port CDN gRPC Cloudflare, certbot deploy-hook
+- `FREEDOM_VERSION` = version Freedom; `SCRIPT_VERSION` bám bivlked AmneziaWG installer
 
-Maintainer: `bash tools/check_upstream.sh` (exit 2 = có bản upstream mới).
+## Bố cục trên server
+
+| Đường dẫn | Nội dung |
+|---|---|
+| `/root/awg` | State AmneziaWG, client, backup |
+| `/root/xray` | Client Xray, cert, pool SNI |
+| `/root/hysteria` | Client Hysteria2, cert |
+| `/etc/amnezia/amneziawg/` | Config server AWG |
+| `/usr/local/etc/xray/config.json` | Config Xray |
+| `/etc/hysteria/config.yaml` | Config Hysteria2 |
+
+## Backup & restore (AmneziaWG)
+
+```bash
+sudo bash /root/awg/manage_amneziawg.sh backup
+sudo bash /root/awg/manage_amneziawg.sh restore /root/awg/backups/awg_backup_*.tar.gz
+```
+
+Xray/Hysteria: sao lưu thư mục `/root/xray` và `/root/hysteria` (client + `*setup_cfg.init`).
+
+## Bảo mật
+
+- Helper scripts tải về được **pin SHA256**; mismatch → cài/update dừng
+- Xray/Hysteria mặc định **chặn egress tới private IP / localhost / 169.254.169.254** (tránh open proxy). Đặt `XRAY_ALLOW_PRIVATE=1` hoặc `HY2_ALLOW_PRIVATE=1` trong file setup nếu cần truy cập LAN qua VPN
+- Cert Let's Encrypt: hook tại `/etc/letsencrypt/renewal-hooks/deploy/freedom.sh` reload Xray/Hysteria sau renew
 
 ## Stack chống kiểm duyệt
 
 | Stack | Transport | Khi nào dùng |
 |---|---|---|
-| AmneziaWG | UDP obfuscated WireGuard | Nhanh, dễ, DPI vừa |
-| VLESS REALITY Vision | TCP + TLS camouflage | Stealth tối đa, active probe |
-| VLESS REALITY XHTTP | HTTP-like request/response | Khi TCP tunnel bị bắt hành vi |
-| VLESS REALITY gRPC | HTTP/2 gRPC | Giống traffic gRPC hợp lệ |
-| CDN XHTTP/gRPC TLS | Domain + LE/self-signed sau Cloudflare | Ẩn IP VPS sau CDN |
-| Hysteria2 | QUIC/UDP + masquerade + OBFS | Tốc độ cao, mobile/lossy |
+| AmneziaWG | UDP obfuscated WireGuard | Nhanh, DPI vừa |
+| VLESS REALITY Vision/XHTTP/gRPC | TCP + camouflage | Stealth, active probe |
+| CDN XHTTP/gRPC TLS | Domain + LE sau Cloudflare | Ẩn IP VPS |
+| Hysteria2 | QUIC/UDP + OBFS | Tốc độ cao, mobile |
 
-Xray core: [XTLS/Xray-core](https://github.com/XTLS/Xray-core). Hysteria2: [apernet/hysteria](https://github.com/apernet/hysteria).
+Upstream: [UPSTREAM.md](UPSTREAM.md). License: [LICENSE](LICENSE), [NOTICE](NOTICE).
 
-## Tuỳ chọn cài AmneziaWG hữu ích
-
-Trong quá trình cài (interactive), script sẽ hỏi:
-- **DNS** cho client (mặc định `1.1.1.1`, `1.0.0.1`)
-- **MTU** — tự nhận IP client đang SSH vào VM, probe path MTU tới IP đó
-- **BBR** — nếu chưa bật thì hỏi có muốn bật không (mặc định **Y**)
-
-```bash
-sudo ./install_freedom.sh --dns=8.8.8.8,8.8.4.4 --mtu=1420
-```
+Maintainer: `bash tools/verify_sha_pins.sh`, `bash tools/check_upstream.sh`.

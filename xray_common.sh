@@ -66,6 +66,57 @@ xray_ensure_dirs() {
     chmod 700 "$XRAY_DIR" "$XRAY_CLIENTS_DIR" "$XRAY_CERT_DIR" 2>/dev/null || true
 }
 
+# Cloudflare orange-cloud proxy ports (HTTPS). Port 444 is NOT proxied.
+XRAY_CF_GRPC_PORTS=(2053 2083 2087 2096 8443)
+
+xray_cdn_grpc_port() {
+    if [[ -n "${XRAY_CDN_GRPC_PORT:-}" && "${XRAY_CDN_GRPC_PORT}" =~ ^[0-9]+$ ]]; then
+        echo "${XRAY_CDN_GRPC_PORT}"
+        return 0
+    fi
+    if [[ -n "${XRAY_CDN_PORT:-}" && "${XRAY_CDN_PORT}" =~ ^[0-9]+$ ]]; then
+        echo $(( XRAY_CDN_PORT + 1 ))
+        return 0
+    fi
+    return 1
+}
+
+xray_pick_cdn_grpc_port() {
+    local p skip e
+    for p in "${XRAY_CF_GRPC_PORTS[@]}"; do
+        skip=0
+        for e in "$@"; do
+            [[ "$p" == "$e" ]] && skip=1
+        done
+        (( skip )) && continue
+        if xray_tcp_port_free "$p"; then
+            echo "$p"
+            return 0
+        fi
+    done
+    return 1
+}
+
+xray_cf_grpc_port_valid() {
+    local want="$1" candidate
+    for candidate in "${XRAY_CF_GRPC_PORTS[@]}"; do
+        [[ "$want" == "$candidate" ]] && return 0
+    done
+    return 1
+}
+
+freedom_install_certbot_deploy_hook() {
+    local hook="/etc/letsencrypt/renewal-hooks/deploy/freedom.sh"
+    mkdir -p "$(dirname "$hook")" 2>/dev/null || return 1
+    cat > "$hook" <<'EOF'
+#!/bin/bash
+systemctl reload-or-restart xray 2>/dev/null || true
+systemctl reload-or-restart hysteria-server 2>/dev/null || true
+EOF
+    chmod 755 "$hook" 2>/dev/null || return 1
+    return 0
+}
+
 xray_valid_name() {
     local n="$1"
     [[ "$n" =~ ^[a-zA-Z0-9_-]+$ ]] || return 1
@@ -474,12 +525,15 @@ xray_issue_tls_cert() {
         log "Requesting Let's Encrypt certificate for $domain (standalone, needs :80 free)..."
         if certbot certonly --standalone --non-interactive --agree-tos \
             --register-unsafely-without-email \
+            --deploy-hook "systemctl reload-or-restart xray" \
             -d "$domain" >/dev/null 2>&1 \
             || certbot certonly --standalone --non-interactive --agree-tos \
+                --deploy-hook "systemctl reload-or-restart xray" \
                 -m "$email" -d "$domain" >/dev/null 2>&1; then
             if [[ -f "$live/fullchain.pem" && -f "$live/privkey.pem" ]]; then
                 XRAY_TLS_CERT="$live/fullchain.pem"
                 XRAY_TLS_KEY="$live/privkey.pem"
+                freedom_install_certbot_deploy_hook || true
                 log "Let's Encrypt certificate issued for $domain"
                 return 0
             fi
@@ -515,7 +569,9 @@ export XRAY_VISION_PORT=${XRAY_VISION_PORT}
 export XRAY_XHTTP_PORT=${XRAY_XHTTP_PORT}
 export XRAY_GRPC_PORT=${XRAY_GRPC_PORT}
 export XRAY_CDN_PORT=${XRAY_CDN_PORT:-}
+export XRAY_CDN_GRPC_PORT=${XRAY_CDN_GRPC_PORT:-}
 export XRAY_CDN_ENABLED=${XRAY_CDN_ENABLED:-0}
+export XRAY_ALLOW_PRIVATE=${XRAY_ALLOW_PRIVATE:-0}
 export XRAY_DOMAIN='${XRAY_DOMAIN:-}'
 export XRAY_TLS_CERT='${XRAY_TLS_CERT:-}'
 export XRAY_TLS_KEY='${XRAY_TLS_KEY:-}'
@@ -537,7 +593,8 @@ xray_load_config() {
     # shellcheck source=/dev/null
     source "$XRAY_CONFIG_FILE"
     : "${XRAY_VISION_PORT:=}" "${XRAY_XHTTP_PORT:=}" "${XRAY_GRPC_PORT:=}"
-    : "${XRAY_CDN_PORT:=}" "${XRAY_CDN_ENABLED:=0}" "${XRAY_DOMAIN:=}"
+    : "${XRAY_CDN_PORT:=}" "${XRAY_CDN_GRPC_PORT:=}" "${XRAY_CDN_ENABLED:=0}" "${XRAY_DOMAIN:=}"
+    : "${XRAY_ALLOW_PRIVATE:=0}"
     : "${XRAY_TLS_CERT:=}" "${XRAY_TLS_KEY:=}"
     : "${XRAY_DEST:=}" "${XRAY_SNI:=}"
     : "${XRAY_PRIVATE_KEY:=}" "${XRAY_PUBLIC_KEY:=}" "${XRAY_SHORT_ID:=}"
@@ -617,10 +674,28 @@ xray_clients_json_array_for() {
     printf ']'
 }
 
+xray_routing_json_block() {
+    if [[ "${XRAY_ALLOW_PRIVATE:-0}" == "1" ]]; then
+        return 0
+    fi
+    cat <<'ROUTING'
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": [
+      {
+        "type": "field",
+        "ip": ["geoip:private", "127.0.0.0/8", "::1/128", "169.254.169.254/32"],
+        "outboundTag": "block"
+      }
+    ]
+  },
+ROUTING
+}
+
 xray_render_server_config() {
     xray_ensure_dirs || return 1
     local vision_clients xhttp_clients grpc_clients
-    local cdn_xhttp_clients cdn_grpc_clients
+    local cdn_xhttp_clients cdn_grpc_clients cdn_grpc_port routing_block=""
     local dest sni tmp cdn_block=""
     dest="${XRAY_DEST}"
     [[ "$dest" == *:* ]] || dest="${dest}:443"
@@ -631,8 +706,10 @@ xray_render_server_config() {
     cdn_xhttp_clients="$(xray_clients_json_array_for xhttp cdn)"
     cdn_grpc_clients="$(xray_clients_json_array_for grpc cdn)"
     tmp="$(xray_mktemp "$(dirname "$XRAY_CONF_JSON")" ".json")" || return 1
+    routing_block="$(xray_routing_json_block)"
 
     if xray_cdn_enabled; then
+        cdn_grpc_port="$(xray_cdn_grpc_port)" || cdn_grpc_port=2053
         cdn_block=$(cat <<CDN
     ,
     {
@@ -666,7 +743,7 @@ xray_render_server_config() {
     {
       "tag": "vless-cdn-grpc",
       "listen": "0.0.0.0",
-      "port": $(( XRAY_CDN_PORT + 1 )),
+      "port": ${cdn_grpc_port},
       "protocol": "vless",
       "settings": {
         "clients": ${cdn_grpc_clients},
@@ -786,7 +863,7 @@ CDN
       }
     }${cdn_block}
   ],
-  "outbounds": [
+${routing_block}  "outbounds": [
     {
       "protocol": "freedom",
       "tag": "direct"
@@ -828,6 +905,9 @@ EOF
 
 xray_apply_config() {
     xray_render_server_config || return 1
+    if [[ "${XRAY_ALLOW_PRIVATE:-0}" != "1" ]]; then
+        log "Xray routing: blocking private/loopback/link-local egress (set XRAY_ALLOW_PRIVATE=1 to allow LAN)."
+    fi
     xray_ensure_service_root
     if systemctl list-unit-files xray.service >/dev/null 2>&1; then
         if systemctl is-active --quiet xray; then
@@ -874,7 +954,7 @@ xray_vless_link() {
             ;;
         cdn-grpc)
             host="${XRAY_DOMAIN:-$host}"
-            port=$(( XRAY_CDN_PORT + 1 ))
+            port="$(xray_cdn_grpc_port)"
             printf 'vless://%s@%s:%s?encryption=none&security=tls&sni=%s&fp=chrome&type=grpc&serviceName=%s&mode=gun&alpn=h2#%s\n' \
                 "$uuid" "$host" "$port" "$(xray_urlencode "$XRAY_DOMAIN")" "$svc" "$enc_name"
             ;;
@@ -895,7 +975,7 @@ xray_write_client_files() {
         xhttp) port="${XRAY_XHTTP_PORT}" ;;
         grpc) port="${XRAY_GRPC_PORT}" ;;
         cdn-xhttp) host="${XRAY_DOMAIN:-$host}"; port="${XRAY_CDN_PORT}"; sni="${XRAY_DOMAIN}" ;;
-        cdn-grpc) host="${XRAY_DOMAIN:-$host}"; port=$(( XRAY_CDN_PORT + 1 )); sni="${XRAY_DOMAIN}" ;;
+        cdn-grpc) host="${XRAY_DOMAIN:-$host}"; port="$(xray_cdn_grpc_port)"; sni="${XRAY_DOMAIN}" ;;
         *) return 1 ;;
     esac
     link="$(xray_vless_link "$proto" "$uuid" "$name")"
@@ -1094,6 +1174,7 @@ xray_add_client() {
 
 xray_remove_client() {
     local name="$1"
+    xray_valid_name "$name" || { log_error "Invalid client name"; return 1; }
     xray_client_exists "$name" || { log_error "Client '$name' not found"; return 1; }
     rm -f "$XRAY_CLIENTS_DIR/${name}.meta" \
           "$XRAY_CLIENTS_DIR/${name}.json" \
@@ -1125,7 +1206,7 @@ xray_maybe_open_ufw() {
     ufw allow "${XRAY_GRPC_PORT}/tcp" comment "Xray VLESS REALITY gRPC" >/dev/null 2>&1 || true
     if xray_cdn_enabled; then
         ufw allow "${XRAY_CDN_PORT}/tcp" comment "Xray CDN XHTTP TLS" >/dev/null 2>&1 || true
-        ufw allow "$((XRAY_CDN_PORT + 1))/tcp" comment "Xray CDN gRPC TLS" >/dev/null 2>&1 || true
+        ufw allow "$(xray_cdn_grpc_port)/tcp" comment "Xray CDN gRPC TLS" >/dev/null 2>&1 || true
         ufw allow 80/tcp comment "HTTP ACME" >/dev/null 2>&1 || true
     fi
 }
@@ -1136,7 +1217,11 @@ xray_maybe_close_ufw() {
     [[ -n "${XRAY_XHTTP_PORT:-}" ]] && ufw delete allow "${XRAY_XHTTP_PORT}/tcp" >/dev/null 2>&1 || true
     [[ -n "${XRAY_GRPC_PORT:-}" ]] && ufw delete allow "${XRAY_GRPC_PORT}/tcp" >/dev/null 2>&1 || true
     [[ -n "${XRAY_CDN_PORT:-}" ]] && ufw delete allow "${XRAY_CDN_PORT}/tcp" >/dev/null 2>&1 || true
-    [[ -n "${XRAY_CDN_PORT:-}" ]] && ufw delete allow "$((XRAY_CDN_PORT + 1))/tcp" >/dev/null 2>&1 || true
+    if [[ -n "${XRAY_CDN_GRPC_PORT:-}" ]]; then
+        ufw delete allow "${XRAY_CDN_GRPC_PORT}/tcp" >/dev/null 2>&1 || true
+    elif [[ -n "${XRAY_CDN_PORT:-}" ]]; then
+        ufw delete allow "$((XRAY_CDN_PORT + 1))/tcp" >/dev/null 2>&1 || true
+    fi
 }
 
 xray_status() {
@@ -1159,7 +1244,7 @@ xray_status() {
             echo "CDN/TLS: enabled"
             echo "CDN domain: ${XRAY_DOMAIN}"
             echo "CDN XHTTP port: ${XRAY_CDN_PORT}"
-            echo "CDN gRPC port: $((XRAY_CDN_PORT + 1))"
+            echo "CDN gRPC port: $(xray_cdn_grpc_port)"
             echo "TLS cert: ${XRAY_TLS_CERT}"
         else
             echo "CDN/TLS: disabled"

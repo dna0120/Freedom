@@ -19,9 +19,11 @@ fi
 set -o pipefail
 SCRIPT_VERSION="5.21.2"
 # Freedom's own release counter; SCRIPT_VERSION tracks the AmneziaWG upstream.
-FREEDOM_VERSION="1.2.0"
+FREEDOM_VERSION="1.3.0"
 UPSTREAM_AWG_PIN="v5.21.2"
 UPSTREAM_AWG_REPO="bivlked/amneziawg-installer"
+
+FREEDOM_REF="${FREEDOM_REF:-main}"
 
 AWG_DIR="/root/awg"
 CONFIG_FILE="$AWG_DIR/awgsetup_cfg.init"
@@ -33,7 +35,7 @@ SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"
 PARAMS_FILE="/etc/amnezia/amneziawg/params"
 PROJECT_REPO="${PROJECT_REPO:-dna0120/Freedom}"
 PROJECT_REPO_URL="https://github.com/${PROJECT_REPO}"
-PROJECT_RAW_BASE="https://raw.githubusercontent.com/${PROJECT_REPO}/main"
+PROJECT_RAW_BASE="https://raw.githubusercontent.com/${PROJECT_REPO}/${FREEDOM_REF}"
 COMMON_SCRIPT_URL="${COMMON_SCRIPT_URL:-${PROJECT_RAW_BASE}/awg_common.sh}"
 COMMON_SCRIPT_PATH="$AWG_DIR/awg_common.sh"
 MANAGE_SCRIPT_URL="${MANAGE_SCRIPT_URL:-${PROJECT_RAW_BASE}/manage_amneziawg.sh}"
@@ -61,10 +63,10 @@ HY2_MANAGE_SCRIPT_PATH="$HY2_DIR/manage_hysteria.sh"
 # Verified in step5_download_scripts() after curl.
 # Format: sha256sum output (hex, 64 chars).
 COMMON_SCRIPT_SHA256="ca3bba0f989ab01775ad91803fb59089cb27039102b594b337bf4299d3f640b4"
-MANAGE_SCRIPT_SHA256="7d6c0a7f0a0983952e4b6a055f0553385d402cc7d017ffd91e1a4707485044d0"
-XRAY_COMMON_SCRIPT_SHA256="7194ee26ab257acb79eba4a4f68cb5a5069c7d3e87835cd300d0fb45b20fd444"
+MANAGE_SCRIPT_SHA256="e2a3d155a46ea42505f64e65b8f64dd724cbea3c13d659c3c6749ebdc8f86e6c"
+XRAY_COMMON_SCRIPT_SHA256="5573de510a3e40f80d5b172c8fb36828632b2a6c4ccb817671fb64e0803b458d"
 XRAY_MANAGE_SCRIPT_SHA256="880d35faffb67b1f55538d8eb613afa4cd2a37780a426544ec35a314d14e6bf2"
-HY2_COMMON_SCRIPT_SHA256="7b866be25e902f5c261a91d1d27b1dc5bb051ce24c16f78916276f07982e1ee4"
+HY2_COMMON_SCRIPT_SHA256="1584a48d798e38f88d0b9f5bf0226cbb329f40b9ce0c4296b7f5ee6dfe6a7a8"
 HY2_MANAGE_SCRIPT_SHA256="033f1381a965a88a8f800933dab2dcb855096ec8dbd6673b627ee8ddf2877a5e"
 
 # CLI flags
@@ -519,17 +521,11 @@ ui_text() {
                 stack_chosen) echo "Sẽ cài: %s" ;;
                 menu_welcome) echo "Chào mừng đến với Freedom!" ;;
                 menu_repo) echo "Mã nguồn: ${PROJECT_REPO_URL}" ;;
-                menu_installed) echo "Phát hiện giao thức Freedom đã được cài." ;;
                 menu_installed_stacks) echo "Giao thức đã cài:" ;;
-                menu_awg_section) echo "AmneziaWG" ;;
-                menu_xray_section) echo "Xray" ;;
-                menu_hy2_section) echo "Hysteria2" ;;
                 menu_install_awg) echo "Cài thêm AmneziaWG" ;;
                 menu_install_xray) echo "Cài thêm Xray" ;;
                 menu_install_hy2) echo "Cài thêm Hysteria2" ;;
                 menu_dynamic_select) echo "Chọn tùy chọn [1-%s]: " ;;
-                menu_status_running) echo "Trạng thái service: running" ;;
-                menu_status_stopped) echo "Trạng thái service: CHƯA chạy (dùng mục 4 để chẩn đoán)" ;;
                 menu_what) echo "Bạn muốn làm gì?" ;;
                 menu_add) echo "1) Thêm client mới" ;;
                 menu_list) echo "2) Xem danh sách client" ;;
@@ -560,8 +556,6 @@ ui_text() {
                 menu_hy2_uninstall) echo "20) Gỡ Hysteria2" ;;
                 menu_hy2_reconfigure) echo "21) Cấu hình lại Hysteria2" ;;
                 menu_updates) echo "22) Kiểm tra / cập nhật" ;;
-                menu_tip) echo "Mẹo: 1-7 AWG, 8-14 Xray, 15-21 Hysteria2, 22 = cập nhật. Cài lại full AWG: sudo bash $0 --force" ;;
-                menu_select) echo "Chọn tùy chọn [1-22]: " ;;
                 update_apply_prompt) echo "Áp dụng cập nhật script Freedom + binary Xray/Hysteria2? [Y/n]: " ;;
                 xray_proto_prompt) echo "Giao thức Xray [1]: " ;;
                 xray_proto_vision) echo "1) VLESS + REALITY + Vision (mặc định)" ;;
@@ -576,7 +570,6 @@ ui_text() {
                 xray_cdn_prompt) echo "Bật CDN/TLS front (Cloudflare-friendly domain)? [y/N]: " ;;
                 xray_domain_prompt) echo "Domain cho CDN/TLS (A record trỏ về VPS)" ;;
                 xray_not_installed) echo "Xray chưa được cài. Chọn mục 8 trước." ;;
-                xray_already) echo "Xray đã được cài." ;;
                 hy2_not_installed) echo "Hysteria2 chưa được cài. Chọn mục 15 trước." ;;
                 hy2_domain_prompt) echo "Domain cho Hysteria2 (Enter = self-signed)" ;;
                 hy2_obfs_prompt) echo "Bật Salamander OBFS? [Y/n]: " ;;
@@ -602,12 +595,10 @@ ui_text() {
                 mtu_prompt) echo "MTU tunnel cho client" ;;
                 mtu_note) echo "Ghi chú MTU: script đo path MTU tới IP client đang SSH vào VM (fallback 1.1.1.1). 1280 = an toàn IPv6; VPS Ethernet thường ~1420." ;;
                 mtu_invalid) echo "MTU không hợp lệ" ;;
-                bbr_already) echo "BBR đã được bật trên hệ thống." ;;
                 bbr_unavailable) echo "Kernel không hỗ trợ BBR — bỏ qua." ;;
                 bbr_yes_default) echo "BBR: bật theo mặc định (--yes)." ;;
                 bbr_status_on) echo "Trạng thái BBR: ĐANG BẬT." ;;
                 bbr_status_off) echo "Trạng thái BBR: CHƯA BẬT." ;;
-                bbr_intro) echo "BBR (TCP congestion control) giúp VPN/TCP nhanh và ổn định hơn." ;;
                 bbr_prompt) echo "Bật / giữ BBR? [Y/n]: " ;;
                 bbr_enabled) echo "Sẽ dùng BBR." ;;
                 bbr_disabled) echo "Không dùng BBR theo lựa chọn của bạn." ;;
@@ -630,17 +621,11 @@ ui_text() {
                 stack_chosen) echo "Will install: %s" ;;
                 menu_welcome) echo "Welcome to Freedom!" ;;
                 menu_repo) echo "Repository: ${PROJECT_REPO_URL}" ;;
-                menu_installed) echo "An installed Freedom stack was detected." ;;
                 menu_installed_stacks) echo "Installed stacks:" ;;
-                menu_awg_section) echo "AmneziaWG" ;;
-                menu_xray_section) echo "Xray" ;;
-                menu_hy2_section) echo "Hysteria2" ;;
                 menu_install_awg) echo "Install AmneziaWG" ;;
                 menu_install_xray) echo "Install Xray" ;;
                 menu_install_hy2) echo "Install Hysteria2" ;;
                 menu_dynamic_select) echo "Select an option [1-%s]: " ;;
-                menu_status_running) echo "Service status: running" ;;
-                menu_status_stopped) echo "Service status: NOT running (use option 4 for diagnostics)" ;;
                 menu_what) echo "What do you want to do?" ;;
                 menu_add) echo "1) Add a new client" ;;
                 menu_list) echo "2) List all clients" ;;
@@ -671,8 +656,6 @@ ui_text() {
                 menu_hy2_uninstall) echo "20) Uninstall Hysteria2" ;;
                 menu_hy2_reconfigure) echo "21) Reconfigure Hysteria2" ;;
                 menu_updates) echo "22) Check / apply updates" ;;
-                menu_tip) echo "Tip: 1-7 AWG, 8-14 Xray, 15-21 Hysteria2, 22 = updates. Full AWG reinstall: sudo bash $0 --force" ;;
-                menu_select) echo "Select an option [1-22]: " ;;
                 update_apply_prompt) echo "Apply Freedom script refresh + Xray/Hysteria2 binary upgrades? [Y/n]: " ;;
                 xray_proto_prompt) echo "Xray protocol [1]: " ;;
                 xray_proto_vision) echo "1) VLESS + REALITY + Vision (default)" ;;
@@ -687,7 +670,6 @@ ui_text() {
                 xray_cdn_prompt) echo "Enable CDN/TLS front (Cloudflare-friendly domain)? [y/N]: " ;;
                 xray_domain_prompt) echo "Domain for CDN/TLS (A record to this VPS)" ;;
                 xray_not_installed) echo "Xray is not installed. Choose option 8 first." ;;
-                xray_already) echo "Xray is already installed." ;;
                 hy2_not_installed) echo "Hysteria2 is not installed. Choose option 15 first." ;;
                 hy2_domain_prompt) echo "Domain for Hysteria2 (Enter = self-signed)" ;;
                 hy2_obfs_prompt) echo "Enable Salamander OBFS? [Y/n]: " ;;
@@ -713,12 +695,10 @@ ui_text() {
                 mtu_prompt) echo "Tunnel MTU for clients" ;;
                 mtu_note) echo "MTU note: probes path MTU toward your SSH client IP (fallback 1.1.1.1). 1280 = IPv6-safe floor; typical Ethernet VPS ~1420." ;;
                 mtu_invalid) echo "Invalid MTU" ;;
-                bbr_already) echo "BBR is already enabled on this system." ;;
                 bbr_unavailable) echo "Kernel does not support BBR — skipping." ;;
                 bbr_yes_default) echo "BBR: enabling by default (--yes)." ;;
                 bbr_status_on) echo "BBR status: ENABLED." ;;
                 bbr_status_off) echo "BBR status: NOT ENABLED." ;;
-                bbr_intro) echo "BBR (TCP congestion control) improves VPN/TCP speed and stability." ;;
                 bbr_prompt) echo "Enable / keep BBR? [Y/n]: " ;;
                 bbr_enabled) echo "BBR will be used." ;;
                 bbr_disabled) echo "BBR will stay disabled by your choice." ;;
@@ -945,8 +925,7 @@ Ví dụ:
   sudo bash install_freedom.sh --update
   sudo bash install_freedom.sh --diagnostic
 
-Sau khi cài, chạy lại script để mở menu quản lý:
-  1-7 AmneziaWG   8-14 Xray   15-21 Hysteria2   22 cập nhật
+Sau khi cài, chạy lại script để mở menu quản lý (số thứ tự phụ thuộc stack đã cài; cập nhật luôn là mục cuối).
 
 Repository: ${PROJECT_REPO_URL}
 EOF
@@ -1022,8 +1001,8 @@ Examples:
   sudo bash install_freedom.sh --update                    # Apply script + binary updates
   sudo bash install_freedom.sh --diagnostic                # Diagnostics
 
-After installation, re-run this script (no flags) to open a management menu:
-  1-7 AmneziaWG   8-14 Xray   15-21 Hysteria2   22 updates
+After installation, re-run this script (no flags) to open a management menu.
+  Option numbers depend on installed stacks; updates is always the last item.
   Same UX style as angristan/wireguard-install.
 
 Repository: ${PROJECT_REPO_URL}
@@ -1938,91 +1917,8 @@ configure_routing_mode() {
 }
 
 # ==============================================================================
-# AWG 2.0 parameter generation (inline — needed in step 0, before downloading awg_common.sh)
+# AWG 2.0 parameter generation (uses rand_range from awg_common.sh)
 # ==============================================================================
-
-# Random number [min, max] via /dev/urandom (uint32 support)
-rand_range() {
-    local min=$1 max=$2
-    local range=$((max - min + 1))
-    local random_val
-    random_val=$(od -An -tu4 -N4 /dev/urandom 2>/dev/null | tr -d ' ')
-    if [[ -z "$random_val" || ! "$random_val" =~ ^[0-9]+$ ]]; then
-        # Fallback: three $RANDOM (15 bits each) with XOR overlap cover bits
-        # 0-30, i.e. the full [0, 2^31-1]. The previous variant
-        # (RANDOM<<15|RANDOM) gave only 30 bits - the upper half of the H
-        # range could never come up.
-        random_val=$(( (RANDOM << 16) ^ (RANDOM << 8) ^ RANDOM ))
-    fi
-    echo $(( (random_val % range) + min ))
-}
-
-# Generate 4 non-overlapping ranges for AWG H1-H4.
-# Algorithm: 8 random values → sort → 4 (low, high) pairs.
-# Sorting gives low <= high; the strict checks below guarantee a gap between
-# pairs (touching bounds = overlap at a single point) and a lower bound >= 5
-# (values 1-4 are reserved for vanilla WireGuard message types).
-# Minimum width per range = 1000 (for proper obfuscation).
-# Prints 4 "low-high" lines to stdout. Returns 1 on failure.
-# Mitigates Russian DPI fingerprinting of static H values (#38).
-#
-# Range: [0, 2^31-1] = [0, 2147483647]. The AmneziaWG spec allows the
-# full uint32 (0-4294967295), but the standalone Windows client
-# `amneziawg-windows-client` has a UI validator capped at 2^31-1 in
-# `ui/syntax/highlighter.go:isValidHField()` (upstream bug
-# amnezia-vpn/amneziawg-windows-client#85, not yet fixed). Values above
-# 2^31-1 work on the server, but the client's config editor underlines
-# them as invalid and blocks saving. For compatibility we generate in
-# the safe half of the range (#40).
-#
-# Optimization: a single `od -N32 -tu4` call reads 32 bytes = 8 uint32
-# values in one operation, instead of 8 separate subprocess calls via
-# rand_range. Falls back to rand_range if /dev/urandom is unavailable.
-generate_awg_h_ranges() {
-    local attempt=0 max_attempts=20
-    while (( attempt < max_attempts )); do
-        local raw arr=() _v
-        raw=$(od -An -N32 -tu4 /dev/urandom 2>/dev/null | tr -s ' \n' '\n' | sed '/^$/d')
-        if [[ -n "$raw" ]]; then
-            local count=0
-            while IFS= read -r _v; do
-                [[ "$_v" =~ ^[0-9]+$ ]] || continue
-                # Mask 0x7FFFFFFF: clears the top bit, value in [0, 2^31-1]
-                # with no bias (each lower bit stays independent).
-                arr+=("$(( _v & 2147483647 ))")
-                count=$((count + 1))
-                (( count == 8 )) && break
-            done <<< "$raw"
-        fi
-        if (( ${#arr[@]} != 8 )); then
-            arr=()
-            local _i
-            for _i in 1 2 3 4 5 6 7 8; do
-                arr+=("$(rand_range 0 2147483647)")
-            done
-        fi
-        local sorted
-        sorted=$(printf '%s\n' "${arr[@]}" | sort -n)
-        arr=()
-        while IFS= read -r _v; do arr+=("$_v"); done <<< "$sorted"
-        if (( ${arr[0]} >= 5 )) && \
-           (( ${arr[1]} - ${arr[0]} >= 1000 )) && \
-           (( ${arr[3]} - ${arr[2]} >= 1000 )) && \
-           (( ${arr[5]} - ${arr[4]} >= 1000 )) && \
-           (( ${arr[7]} - ${arr[6]} >= 1000 )) && \
-           (( ${arr[2]} > ${arr[1]} )) && \
-           (( ${arr[4]} > ${arr[3]} )) && \
-           (( ${arr[6]} > ${arr[5]} )); then
-            printf '%s-%s\n' "${arr[0]}" "${arr[1]}"
-            printf '%s-%s\n' "${arr[2]}" "${arr[3]}"
-            printf '%s-%s\n' "${arr[4]}" "${arr[5]}"
-            printf '%s-%s\n' "${arr[6]}" "${arr[7]}"
-            return 0
-        fi
-        attempt=$((attempt + 1))
-    done
-    return 1
-}
 
 # Generate CPS string for I1
 # Format: "<r N>" where N is the number of random bytes (32-256)
@@ -3052,6 +2948,17 @@ initialize_setup() {
     mkdir -p "$AWG_DIR" || die "Error creating $AWG_DIR"
     chown root:root "$AWG_DIR"
 
+    if [[ "$INSTALL_AWG" -eq 1 ]]; then
+        if [[ ! -f "$COMMON_SCRIPT_PATH" ]]; then
+            _secure_download "$COMMON_SCRIPT_URL" "$COMMON_SCRIPT_PATH" \
+                "$COMMON_SCRIPT_SHA256" "awg_common.sh"
+        fi
+        if [[ -f "$COMMON_SCRIPT_PATH" ]]; then
+            # shellcheck source=/dev/null
+            source "$COMMON_SCRIPT_PATH"
+        fi
+    fi
+
     # Process-wide lock: prevents two install_freedom.sh instances from
     # running concurrently. Without it two parallel runs could read the
     # same setup_state, race each other on apt-get/dkms/ufw and corrupt
@@ -3461,17 +3368,30 @@ EOF
     fi
 
     # Loading state
-    if [[ "${MENU_ACTION:-}" == "reconfigure" ]]; then
-        # Soft reconfigure: keep AmneziaWG packages/module, re-apply settings from step 4.
-        # Avoids apt upgrade + reboot that a full step-1 reinstall would trigger.
-        log "Reconfigure: applying sysctl, then continuing from step 4 (no full reinstall/reboot)."
-        if [[ "${NO_TWEAKS:-0}" -eq 0 ]]; then
-            setup_advanced_sysctl
+    if [[ "${MENU_ACTION:-}" == "install" ]]; then
+        log "Install AmneziaWG: starting from step 1 (packages, module, firewall, configs)."
+        current_step=1
+        update_state 1
+    elif [[ "${MENU_ACTION:-}" == "reconfigure" ]]; then
+        local _awg_pkg_ok=0 _awg_mod_ok=0
+        dpkg -l amneziawg-dkms 2>/dev/null | grep -q '^ii' && _awg_pkg_ok=1
+        lsmod 2>/dev/null | grep -q '^amneziawg ' && _awg_mod_ok=1
+        if [[ "$_awg_pkg_ok" -eq 0 || "$_awg_mod_ok" -eq 0 ]]; then
+            log_warn "AmneziaWG packages/module not ready; falling back to full install from step 1."
+            current_step=1
+            update_state 1
         else
-            setup_minimal_sysctl
+            # Soft reconfigure: keep AmneziaWG packages/module, re-apply settings from step 4.
+            # Avoids apt upgrade + reboot that a full step-1 reinstall would trigger.
+            log "Reconfigure: applying sysctl, then continuing from step 4 (no full reinstall/reboot)."
+            if [[ "${NO_TWEAKS:-0}" -eq 0 ]]; then
+                setup_advanced_sysctl
+            else
+                setup_minimal_sysctl
+            fi
+            current_step=4
+            update_state 4
         fi
-        current_step=4
-        update_state 4
     elif [[ -f "$STATE_FILE" ]]; then
         current_step=$(cat "$STATE_FILE")
         if ! [[ "$current_step" =~ ^[0-9]+$ ]]; then
@@ -4337,32 +4257,14 @@ step4_setup_firewall() {
 
 verify_sha256() {
     local file="$1" expected="$2" label="$3"
-    # Skip verification when:
-    # - SHA is not set (RELEASE_PLACEHOLDER — release not yet published)
-    # - AWG_BRANCH is overridden (test branch)
-    if [[ "$expected" == "RELEASE_PLACEHOLDER" ]]; then
-        log_debug "SHA256 for $label: skipped (placeholder, pre-release)."
+    if [[ "${FREEDOM_ALLOW_UNVERIFIED:-0}" == "1" ]]; then
+        log_warn "SHA256 for $label: SKIPPED (FREEDOM_ALLOW_UNVERIFIED=1). File NOT verified."
         return 0
     fi
-    if [[ "${AWG_BRANCH}" != "v${SCRIPT_VERSION}" ]]; then
-        log_warn "SHA256 for $label: verification skipped (AWG_BRANCH=${AWG_BRANCH} != v${SCRIPT_VERSION}). File not verified."
-        return 0
-    fi
-    local actual
-    actual=$(sha256sum "$file" 2>/dev/null | awk '{print $1}')
-    if [[ "$actual" != "$expected" ]]; then
-        log_error "SHA256 mismatch for $label!"
-        log_error "  Expected: $expected"
-        log_error "  Got:      $actual"
-        log_error "  File may have been tampered with. Re-download the installer from GitHub."
-        return 1
-    fi
-    log_debug "SHA256 $label: OK ($actual)"
-    return 0
+    _verify_sha256_required "$file" "$expected" "$label"
 }
 
-# Always verify (used by --update). verify_sha256 may skip when AWG_BRANCH
-# does not match SCRIPT_VERSION; that is unsafe for a script refresh.
+# Always verify (used by --update and normal install downloads).
 _verify_sha256_required() {
     local file="$1" expected="$2" label="$3" actual
     if [[ "$expected" == "RELEASE_PLACEHOLDER" || -z "$expected" ]]; then
@@ -4374,9 +4276,10 @@ _verify_sha256_required() {
         log_error "SHA256 mismatch for $label!"
         log_error "  Expected: $expected"
         log_error "  Got:      $actual"
+        log_error "  File may have been tampered with. Re-download the installer from GitHub."
         return 1
     fi
-    log "SHA256 $label: OK"
+    log_debug "SHA256 $label: OK ($actual)"
     return 0
 }
 
@@ -4690,13 +4593,18 @@ step_install_xray() {
                     || die "Could not pick CDN TCP port"
             fi
         fi
+        if [[ -z "${XRAY_CDN_GRPC_PORT:-}" ]] || ! [[ "${XRAY_CDN_GRPC_PORT}" =~ ^[0-9]+$ ]]; then
+            XRAY_CDN_GRPC_PORT="$(xray_pick_cdn_grpc_port "$vision_port" "$xhttp_port" "$grpc_port" "${XRAY_CDN_PORT}")" \
+                || XRAY_CDN_GRPC_PORT=2053
+        fi
         xray_issue_tls_cert "$XRAY_DOMAIN" || die "Failed to issue TLS certificate for $XRAY_DOMAIN"
-        log "CDN/TLS front enabled for ${XRAY_DOMAIN} (XHTTP :${XRAY_CDN_PORT}, gRPC :$((XRAY_CDN_PORT+1)))."
+        log "CDN/TLS front enabled for ${XRAY_DOMAIN} (XHTTP :${XRAY_CDN_PORT}, gRPC :${XRAY_CDN_GRPC_PORT})."
         log "Cloudflare tip: orange-cloud A record → this VPS; SSL mode Full (or Full Strict with LE cert)."
     else
         XRAY_CDN_ENABLED=0
         XRAY_DOMAIN=""
         XRAY_CDN_PORT=""
+        XRAY_CDN_GRPC_PORT=""
         XRAY_TLS_CERT=""
         XRAY_TLS_KEY=""
     fi
@@ -4710,9 +4618,9 @@ step_install_xray() {
     log "  gRPC   TCP: ${XRAY_GRPC_PORT}"
     log "  REALITY dest/SNI: ${XRAY_SNI}"
     if [[ "$XRAY_CDN_ENABLED" -eq 1 ]]; then
-        log "  CDN domain: ${XRAY_DOMAIN} (XHTTP :${XRAY_CDN_PORT}, gRPC :$((XRAY_CDN_PORT+1)))"
+        log "  CDN domain: ${XRAY_DOMAIN} (XHTTP :${XRAY_CDN_PORT}, gRPC :${XRAY_CDN_GRPC_PORT})"
     fi
-    log "Manage: sudo bash $0  → options 9-14"
+    log "Manage: sudo bash $0  (post-install menu)"
 }
 
 step_uninstall_xray() {
@@ -5047,7 +4955,7 @@ step_install_hy2() {
     log "  SNI: ${HY2_SNI}"
     log "  Insecure: ${HY2_INSECURE}"
     log "  OBFS: $( [[ -n ${HY2_OBFS:-} ]] && echo salamander || echo off )"
-    log "Manage: sudo bash $0  → options 16-21"
+    log "Manage: sudo bash $0  (post-install menu)"
 }
 
 step_uninstall_hy2() {
@@ -5619,7 +5527,7 @@ manageMenu() {
     hy2_uninstall) step_uninstall_hy2 ;;
     hy2_reconfigure) step_reconfigure_hy2 ;;
     install_awg)
-        MENU_ACTION="reconfigure"
+        MENU_ACTION="install"
         FORCE_REINSTALL=1
         INSTALL_AWG=1
         ;;
@@ -5661,6 +5569,7 @@ should_prompt_stack() {
     [[ "$AUTO_YES" -eq 1 ]] && return 1
     [[ "$FORCE_REINSTALL" -eq 1 ]] && return 1
     [[ "${MENU_ACTION:-}" == "reconfigure" ]] && return 1
+    [[ "${MENU_ACTION:-}" == "install" ]] && return 1
     [[ -f "$SERVER_CONF_FILE" ]] && return 1
     [[ -f "$STATE_FILE" ]] && return 1
     [[ -t 0 ]] || return 1
@@ -5892,6 +5801,39 @@ update_repair_xray_dest() {
 
 # Self-signed certificates issued by older releases have no SAN and the profiles
 # carry no pin, which iOS clients reject. Reissue both.
+update_repair_xray_cdn_port() {
+    local old_port new_port names=()
+    [[ "${XRAY_CDN_ENABLED:-0}" == "1" ]] || return 0
+    [[ -n "${XRAY_CDN_PORT:-}" ]] || return 0
+    old_port="$(xray_cdn_grpc_port 2>/dev/null || true)"
+    if [[ -n "$old_port" ]] && xray_cf_grpc_port_valid "$old_port"; then
+        return 0
+    fi
+    new_port="$(xray_pick_cdn_grpc_port "${XRAY_VISION_PORT}" "${XRAY_XHTTP_PORT}" "${XRAY_GRPC_PORT}" "${XRAY_CDN_PORT}")" \
+        || new_port=2053
+    if [[ "$old_port" == "$new_port" ]]; then
+        return 0
+    fi
+    log_warn "CDN gRPC port ${old_port:-?} is not Cloudflare-proxyable; switching to ${new_port}."
+    XRAY_CDN_GRPC_PORT="$new_port"
+    xray_save_config || log_warn "Could not save the new CDN gRPC port."
+    xray_apply_config || log_warn "Applying the new CDN gRPC port failed."
+    shopt -s nullglob
+    local f name proto
+    for f in "$XRAY_CLIENTS_DIR"/*.meta; do
+        name="$(basename "$f" .meta)"
+        # shellcheck source=/dev/null
+        source "$f"
+        proto="${XRAY_CLIENT_PROTO:-}"
+        [[ "$proto" == "cdn-grpc" ]] && names+=("$name")
+    done
+    shopt -u nullglob
+    xray_refresh_client_files
+    if ((${#names[@]} > 0)); then
+        log "Re-import these CDN-gRPC profiles (port changed): ${names[*]}"
+    fi
+}
+
 update_repair_hy2_cert() {
     local cert="${HY2_TLS_CERT:-}" reissued=0
     [[ -n "$cert" && -f "$cert" ]] || return 0
@@ -5979,6 +5921,14 @@ step_apply_updates() {
     fi
     rm -rf "$tmpdir"
 
+    if declare -f freedom_install_certbot_deploy_hook >/dev/null 2>&1; then
+        freedom_install_certbot_deploy_hook || log_warn "Could not install certbot deploy hook."
+    elif [[ -f "$XRAY_COMMON_SCRIPT_PATH" ]]; then
+        # shellcheck source=/dev/null
+        source "$XRAY_COMMON_SCRIPT_PATH"
+        freedom_install_certbot_deploy_hook || log_warn "Could not install certbot deploy hook."
+    fi
+
     if [[ -x "$XRAY_BIN" || -f "$XRAY_CONFIG_FILE" ]]; then
         local xray_was=0 xray_bak=""
         _svc_active xray && xray_was=1
@@ -5992,6 +5942,7 @@ step_apply_updates() {
             xray_load_config 2>/dev/null || true
             xray_apply_config || log_warn "xray_apply_config failed (clients/config kept on disk)."
             update_repair_xray_dest
+            update_repair_xray_cdn_port
         fi
         _update_guard_service xray "$XRAY_CONF_JSON" "$xray_bak" "$xray_was" "Xray"
     fi
@@ -6072,7 +6023,7 @@ fi
 if should_open_manage_menu; then
     if [ "$(id -u)" -ne 0 ]; then die "Run the script as root (sudo bash $0)."; fi
     manageMenu
-    if [[ "${MENU_ACTION:-exit}" != "reconfigure" ]]; then
+    if [[ "${MENU_ACTION:-exit}" != "reconfigure" && "${MENU_ACTION:-exit}" != "install" ]]; then
         exit 0
     fi
 elif should_prompt_stack; then
@@ -6085,7 +6036,7 @@ fi
 # Stack choice excluded AmneziaWG: run only the selected extra stacks.
 if [[ "$INSTALL_AWG" -eq 0 ]]; then
     run_selected_extra_stacks
-    exit 0
+    exit 0  
 fi
 
 initialize_setup

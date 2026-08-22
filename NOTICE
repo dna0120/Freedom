@@ -1,0 +1,30 @@
+Freedom Installer — Third-Party Notices
+=========================================
+
+This project includes or derives from the following third-party works.
+
+AmneziaWG installer (bivlked/amneziawg-installer)
+-------------------------------------------------
+Copyright (c) 2025-2026 Ivan Bondarev
+
+Licensed under the MIT License.
+Repository: https://github.com/bivlked/amneziawg-installer
+
+Portions of awg_common.sh, manage_amneziawg.sh, and install_freedom.sh
+are derived from or inspired by this upstream installer.
+
+angristan/wireguard-install
+---------------------------
+Copyright (c) 2018-2026 Stanislas Dubois (angristan)
+
+Licensed under the MIT License.
+Repository: https://github.com/angristan/wireguard-install
+
+Freedom adopts a similar interactive menu UX pattern. No runtime code is
+vendored from this project.
+
+Other runtime dependencies (installed on the target VPS, not shipped in-repo)
+-----------------------------------------------------------------------------
+- Xray-core: https://github.com/XTLS/Xray-core
+- Hysteria2: https://github.com/apernet/hysteria
+- AmneziaWG packages: https://github.com/amnezia-vpn

@@ -61,6 +61,37 @@ hy2_ensure_dirs() {
     chmod 700 "$HY2_DIR" "$HY2_CLIENTS_DIR" "$HY2_CERT_DIR" 2>/dev/null || true
 }
 
+hy2_acl_yaml_block() {
+    if [[ "${HY2_ALLOW_PRIVATE:-0}" == "1" ]]; then
+        return 0
+    fi
+    cat <<'ACL'
+
+acl:
+  inline:
+    - reject(10.0.0.0/8)
+    - reject(172.16.0.0/12)
+    - reject(192.168.0.0/16)
+    - reject(127.0.0.0/8)
+    - reject(169.254.169.254/32)
+    - reject(::1/128)
+    - reject(fc00::/7)
+ACL
+}
+
+if ! declare -f freedom_install_certbot_deploy_hook >/dev/null 2>&1; then
+    freedom_install_certbot_deploy_hook() {
+        local hook="/etc/letsencrypt/renewal-hooks/deploy/freedom.sh"
+        mkdir -p "$(dirname "$hook")" 2>/dev/null || return 1
+        cat > "$hook" <<'EOF'
+#!/bin/bash
+systemctl reload-or-restart xray 2>/dev/null || true
+systemctl reload-or-restart hysteria-server 2>/dev/null || true
+EOF
+        chmod 755 "$hook" 2>/dev/null || return 1
+    }
+fi
+
 hy2_valid_name() {
     local n="$1"
     [[ "$n" =~ ^[a-zA-Z0-9_-]+$ ]] || return 1
@@ -190,8 +221,11 @@ hy2_issue_acme_or_self() {
     if command -v certbot >/dev/null 2>&1; then
         log "Requesting Let's Encrypt cert for Hysteria domain $domain..."
         if certbot certonly --standalone --non-interactive --agree-tos \
-            --register-unsafely-without-email -d "$domain" >/dev/null 2>&1 \
+            --register-unsafely-without-email \
+            --deploy-hook "systemctl reload-or-restart hysteria-server" \
+            -d "$domain" >/dev/null 2>&1 \
             || certbot certonly --standalone --non-interactive --agree-tos \
+                --deploy-hook "systemctl reload-or-restart hysteria-server" \
                 -m "$email" -d "$domain" >/dev/null 2>&1; then
             if [[ -f "$live/fullchain.pem" && -f "$live/privkey.pem" ]]; then
                 HY2_TLS_CERT="$live/fullchain.pem"
@@ -199,6 +233,7 @@ hy2_issue_acme_or_self() {
                 HY2_INSECURE=0
                 HY2_SNI="$domain"
                 HY2_DOMAIN="$domain"
+                freedom_install_certbot_deploy_hook || true
                 return 0
             fi
         fi
@@ -224,6 +259,7 @@ export HY2_INSECURE=${HY2_INSECURE:-1}
 export HY2_OBFS='${HY2_OBFS:-}'
 export HY2_MASQUERADE='${HY2_MASQUERADE:-https://www.microsoft.com/}'
 export HY2_ENDPOINT='${HY2_ENDPOINT:-}'
+export HY2_ALLOW_PRIVATE=${HY2_ALLOW_PRIVATE:-0}
 EOF
     chmod 600 "$tmp"
     mv -f "$tmp" "$HY2_CONFIG_FILE"
@@ -236,6 +272,7 @@ hy2_load_config() {
     : "${HY2_PORT:=}" "${HY2_DOMAIN:=}" "${HY2_SNI:=}"
     : "${HY2_TLS_CERT:=}" "${HY2_TLS_KEY:=}" "${HY2_INSECURE:=1}"
     : "${HY2_OBFS:=}" "${HY2_MASQUERADE:=https://www.microsoft.com/}" "${HY2_ENDPOINT:=}"
+    : "${HY2_ALLOW_PRIVATE:=0}"
 }
 
 hy2_userpass_yaml() {
@@ -272,6 +309,8 @@ obfs:
 OBFS
 )
     fi
+    local acl_block
+    acl_block="$(hy2_acl_yaml_block)"
     tmp="$(hy2_mktemp "$(dirname "$HY2_SERVER_YAML")")" || return 1
     cat > "$tmp" <<EOF
 listen: :${HY2_PORT}
@@ -286,6 +325,7 @@ auth:
 ${users_block}
 
 ${obfs_block}
+${acl_block}
 
 masquerade:
   type: proxy
@@ -300,6 +340,9 @@ EOF
 
 hy2_apply_config() {
     hy2_render_server_config || return 1
+    if [[ "${HY2_ALLOW_PRIVATE:-0}" != "1" ]]; then
+        log "Hysteria2 ACL: blocking private/loopback/link-local egress (set HY2_ALLOW_PRIVATE=1 to allow LAN)."
+    fi
     if systemctl list-unit-files hysteria-server.service >/dev/null 2>&1; then
         systemctl enable hysteria-server.service >/dev/null 2>&1 || true
         systemctl restart hysteria-server.service || return 1

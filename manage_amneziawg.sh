@@ -1860,7 +1860,7 @@ usage() {
     echo "  -h, --help            Show this help"
     echo "  -v, --verbose         Verbose output (for list command)"
     echo "  --no-color            Disable colored output"
-    echo "  --json                Machine-readable JSON output (most commands; details in ADVANCED.en.md)"
+    echo "  --json                Machine-readable JSON output (most commands)"
     echo "                        ENV AWG_STRICT_CONFIRM=1: non-TTY run without --yes is refused (rc 1)"
     echo "  --expires=DURATION    Expiry time for add (1h, 12h, 1d, 7d, 30d, 4w)"
     echo "  --conf-dir=PATH       Specify AWG directory (default: $AWG_DIR)"

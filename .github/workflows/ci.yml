@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bash syntax check
+        run: |
+          shopt -s globstar nullglob
+          for f in *.sh tools/*.sh; do
+            [[ -f "$f" ]] || continue
+            bash -n "$f"
+          done
+
+      - name: ShellCheck
+        uses: koalaman/shellcheck-action@v0.9
+        with:
+          scandir: '.'
+          format: gcc
+          severity: error
+
+      - name: Verify SHA256 pins
+        run: bash tools/verify_sha_pins.sh
