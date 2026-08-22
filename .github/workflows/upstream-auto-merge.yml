@@ -1,11 +1,8 @@
 name: Upstream auto-merge
 
-# Enable auto-merge (or squash-merge) only after Upstream sync CI completes.
-# Runs in default-branch context — no action_required approval gate.
+# Manual recovery only. Normal path: upstream-pr-ci.yml merges at job end.
+# workflow_run chaining is blocked when the upstream job used GITHUB_TOKEN.
 on:
-  workflow_run:
-    workflows: ["Upstream sync CI"]
-    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -14,10 +11,9 @@ permissions:
 
 jobs:
   merge-when-green:
-    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
-      - name: Squash-merge upstream sync PR
+      - name: Squash-merge open upstream sync PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -29,17 +25,5 @@ jobs:
             echo "No open PR for auto/upstream-sync."
             exit 0
           fi
-
-          echo "Merging PR #$pr (Upstream sync CI passed)."
-          if gh pr merge "$pr" --squash; then
-            echo "Squash-merged PR #$pr."
-            exit 0
-          fi
-
-          echo "Direct merge failed; trying auto-merge (squash)..."
-          if gh pr merge "$pr" --auto --squash; then
-            echo "Auto-merge enabled for PR #$pr."
-          else
-            echo "::warning::Could not merge PR #$pr automatically."
-            exit 1
-          fi
+          echo "Squash-merging PR #$pr."
+          gh pr merge "$pr" --squash
