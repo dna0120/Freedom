@@ -22,6 +22,8 @@ Workflow: [`.github/workflows/upstream-check.yml`](.github/workflows/upstream-ch
 3. Opens (or updates) PR branch `auto/upstream-sync` with labels `upstream`, `automated`.
 4. Enables **auto-merge (squash)** when required checks pass (needs auto-merge enabled on the repo).
 
+**One-time repo setting (required for PR step):** GitHub → **Settings → Actions → General → Workflow permissions** → enable **Read and write permissions** and check **Allow GitHub Actions to create and approve pull requests**. Without this, sync succeeds but `create-pull-request` fails.
+
 If an AWG patch fails, the PR still records the failure in `upstream/SYNC_PR_BODY.md` and skips the pin bump — maintainer cherry-picks manually.
 
 ## Maintainer check (local)
