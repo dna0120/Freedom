@@ -22,6 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Upstream check (report)
         id: check
@@ -88,22 +90,72 @@ jobs:
             bash -n "$f"
           done
 
-      - name: Create or update Pull Request
+      - name: Push upstream sync branch
         if: steps.sync.outputs.rc == '3'
+        id: push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git reset HEAD upstream/sync-step.log 2>/dev/null || true
+          git checkout -B auto/upstream-sync
+          if git diff --staged --quiet; then
+            echo "pushed=0" >> "$GITHUB_OUTPUT"
+            echo "No staged changes to push."
+            exit 0
+          fi
+          git commit -m "chore(upstream): automated upstream sync"
+          git push -f origin auto/upstream-sync
+          echo "pushed=1" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update pull request
+        if: steps.sync.outputs.rc == '3' && steps.push.outputs.pushed == '1'
         id: cpr
-        uses: peter-evans/create-pull-request@v8
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: "chore(upstream): automated upstream sync"
-          title: "chore(upstream): automated upstream sync"
-          body-path: upstream/SYNC_PR_BODY.md
-          branch: auto/upstream-sync
-          delete-branch: true
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          body_file=upstream/SYNC_PR_BODY.md
+          [[ -f "$body_file" ]] || body_file=/dev/null
+          existing=$(gh pr list --head auto/upstream-sync --base main --json number \
+            --jq '.[0].number // empty')
+          if [[ -n "$existing" ]]; then
+            gh pr comment "$existing" --body-file "$body_file"
+            echo "pull-request-number=$existing" >> "$GITHUB_OUTPUT"
+            echo "Updated PR #$existing"
+          else
+            if num=$(gh pr create --base main --head auto/upstream-sync \
+              --title "chore(upstream): automated upstream sync" \
+              --body-file "$body_file" \
+              --json number --jq .number 2>/dev/null); then
+              echo "pull-request-number=$num" >> "$GITHUB_OUTPUT"
+              echo "Opened PR #$num"
+            else
+              echo "::warning::Could not create PR automatically. Enable Workflow permissions → Allow GitHub Actions to create pull requests, or use the compare link in the job summary."
+            fi
+          fi
+
+      - name: Upstream sync summary
+        if: steps.sync.outputs.rc == '3' && steps.push.outputs.pushed == '1'
+        run: |
+          compare="https://github.com/${{ github.repository }}/compare/main...auto/upstream-sync?expand=1"
+          {
+            echo "## Upstream sync pushed"
+            echo ""
+            echo "Branch \`auto/upstream-sync\` was updated."
+            echo ""
+            echo "**Open a PR manually:** [$compare]($compare)"
+            if [[ -n "${{ steps.cpr.outputs.pull-request-number }}" ]]; then
+              echo ""
+              echo "PR: #${{ steps.cpr.outputs.pull-request-number }}"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Enable auto-merge when checks pass
         if: steps.sync.outputs.rc == '3' && steps.cpr.outputs.pull-request-number != ''
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh pr merge "${{ steps.cpr.outputs.pull-request-number }}" --auto --squash \
-            || echo "Auto-merge not enabled (branch protection); merge the PR manually."
+            || echo "Auto-merge not enabled; merge the PR manually."
