@@ -144,13 +144,19 @@ jobs:
           pr_err=/tmp/gh-pr-create.err
           num=""
           for i in 1 2 3 4 5; do
-            if num=$(gh pr create --base main --head auto/upstream-sync \
+            if pr_url=$(gh pr create --base main --head auto/upstream-sync \
               --title "chore(upstream): automated upstream sync" \
-              --body-file "$body_file" \
-              --json number --jq .number 2>"$pr_err"); then
-              echo "pull-request-number=$num" >> "$GITHUB_OUTPUT"
-              echo "Opened PR #$num (attempt $i)"
-              exit 0
+              --body-file "$body_file" 2>"$pr_err"); then
+              num="${pr_url##*/}"
+              if [[ -z "$num" || "$num" == "$pr_url" ]]; then
+                num=$(gh pr list --head auto/upstream-sync --base main --json number \
+                  --jq '.[0].number // empty')
+              fi
+              if [[ -n "$num" ]]; then
+                echo "pull-request-number=$num" >> "$GITHUB_OUTPUT"
+                echo "Opened PR #$num (attempt $i)"
+                exit 0
+              fi
             fi
             echo "PR create attempt $i failed: $(tr '\n' ' ' < "$pr_err")"
             sleep 5
