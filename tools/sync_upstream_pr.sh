@@ -17,11 +17,20 @@ VENDOR="$ROOT/upstream/vendor/bivlked"
 BODY="$ROOT/upstream/SYNC_PR_BODY.md"
 UA="Freedom-upstream-sync (+https://github.com/dna0120/Freedom)"
 
-need() { command -v "$1" >/dev/null 2>&1 || { echo "ERROR: need $1" >&2; exit 1; }; }
+need() {
+    if command -v "$1" >/dev/null 2>&1; then
+        return 0
+    fi
+    echo "ERROR: need $1 (Ubuntu/Debian: apt install $1)" >&2
+    exit 1
+}
 need curl
 need python3
-need patch
 need git
+if ! command -v patch >/dev/null 2>&1; then
+    echo "ERROR: need patch (Ubuntu/Debian: apt install patch)" >&2
+    exit 1
+fi
 
 gh_json() {
     curl -fsSL --max-time 30 -H "User-Agent: $UA" -H "Accept: application/vnd.github+json" "$1"
@@ -134,24 +143,26 @@ PY
 AWG_SYNCED=0
 if [[ -n "$BIVLKED_PIN" && -n "$BIVLKED_LATEST" && "$BIVLKED_LATEST" != "$BIVLKED_PIN" ]]; then
     echo "bivlked update: ${BIVLKED_PIN} → ${BIVLKED_LATEST}"
-    download_bivlked "$BIVLKED_PIN" "$VENDOR/$BIVLKED_PIN"
-    download_bivlked "$BIVLKED_LATEST" "$VENDOR/$BIVLKED_LATEST"
+    if ! download_bivlked "$BIVLKED_PIN" "$VENDOR/$BIVLKED_PIN"; then
+        NOTES+=("Failed to download bivlked vendor snapshot for \`${BIVLKED_PIN}\`.")
+    elif ! download_bivlked "$BIVLKED_LATEST" "$VENDOR/$BIVLKED_LATEST"; then
+        NOTES+=("Failed to download bivlked vendor snapshot for \`${BIVLKED_LATEST}\`.")
+    else
+        awg_ok=1
+        for f in awg_common.sh manage_amneziawg.sh; do
+            if ! apply_bivlked_delta "$BIVLKED_PIN" "$BIVLKED_LATEST" "$f"; then
+                awg_ok=0
+                NOTES+=("AWG patch failed for \`$f\` — manual cherry-pick required (see vendor diff).")
+                git checkout -- "$f" 2>/dev/null || true
+            fi
+        done
 
-    awg_ok=1
-    for f in awg_common.sh manage_amneziawg.sh; do
-        if ! apply_bivlked_delta "$BIVLKED_PIN" "$BIVLKED_LATEST" "$f"; then
-            awg_ok=0
-            NOTES+=("AWG patch failed for \`$f\` — manual cherry-pick required (see vendor diff).")
-            git checkout -- "$f" 2>/dev/null || true
-        fi
-    done
-
-    if [[ "$awg_ok" -eq 1 ]]; then
-        bash "$ROOT/tools/apply_freedom_awg_branding.sh" "$BIVLKED_LATEST"
-        VER="${BIVLKED_LATEST#v}"
-        sed -i "s/^SCRIPT_VERSION=\"[^\"]*\"/SCRIPT_VERSION=\"${VER}\"/" "$INSTALLER"
-        sed -i "s/^UPSTREAM_AWG_PIN=\"[^\"]*\"/UPSTREAM_AWG_PIN=\"${BIVLKED_LATEST}\"/" "$INSTALLER"
-        python3 - "$MANIFEST" "$BIVLKED_LATEST" <<'PY'
+        if [[ "$awg_ok" -eq 1 ]]; then
+            bash "$ROOT/tools/apply_freedom_awg_branding.sh" "$BIVLKED_LATEST"
+            VER="${BIVLKED_LATEST#v}"
+            sed -i "s/^SCRIPT_VERSION=\"[^\"]*\"/SCRIPT_VERSION=\"${VER}\"/" "$INSTALLER"
+            sed -i "s/^UPSTREAM_AWG_PIN=\"[^\"]*\"/UPSTREAM_AWG_PIN=\"${BIVLKED_LATEST}\"/" "$INSTALLER"
+            python3 - "$MANIFEST" "$BIVLKED_LATEST" <<'PY'
 import json, sys
 from pathlib import Path
 path = Path(sys.argv[1])
@@ -164,11 +175,12 @@ for s in data.get("sources", []):
         break
 path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 PY
-        AWG_SYNCED=1
-        CHANGES=1
-        NOTES+=("AmneziaWG helpers synced via bivlked delta ${BIVLKED_PIN} → ${BIVLKED_LATEST}.")
-    else
-        NOTES+=("Skipped AWG pin bump because patch did not apply cleanly.")
+            AWG_SYNCED=1
+            CHANGES=1
+            NOTES+=("AmneziaWG helpers synced via bivlked delta ${BIVLKED_PIN} → ${BIVLKED_LATEST}.")
+        else
+            NOTES+=("Skipped AWG pin bump because patch did not apply cleanly.")
+        fi
     fi
 else
     echo "bivlked pin current (${BIVLKED_PIN:-unknown})."
