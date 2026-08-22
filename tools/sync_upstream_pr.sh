@@ -68,7 +68,10 @@ download_bivlked() {
 }
 
 apply_bivlked_delta() {
-    local old="$1" new="$2" file="$3" target="$ROOT/$file"
+    local old="$1"
+    local new="$2"
+    local file="$3"
+    local target="$ROOT/$file"
     local oldf="$VENDOR/$old/$file" newf="$VENDOR/$new/$file"
     local patchf bak
     [[ -f "$target" && -f "$oldf" && -f "$newf" ]] || return 1
@@ -137,7 +140,9 @@ if changed:
 print("1" if changed else "0")
 PY
 )"
-[[ "$manifest_info_changed" == "1" ]] && CHANGES=1
+if [[ "$manifest_info_changed" == "1" ]]; then
+    CHANGES=1
+fi
 
 # --- bivlked AWG helper sync ---
 AWG_SYNCED=0

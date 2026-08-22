@@ -65,12 +65,13 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq patch
-          set +e
           bash tools/sync_upstream_pr.sh
           rc=$?
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
-          if [[ "$rc" -eq 1 ]]; then exit 1; fi
-          exit 0
+          if [[ "$rc" != "0" && "$rc" != "3" ]]; then
+            echo "sync_upstream_pr.sh failed with exit $rc" >&2
+            exit 1
+          fi
 
       - name: Verify SHA256 pins (when AWG helpers may have changed)
         if: steps.sync.outputs.rc == '3'
