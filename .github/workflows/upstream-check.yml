@@ -108,8 +108,21 @@ jobs:
           git push -f origin auto/upstream-sync
           echo "pushed=1" >> "$GITHUB_OUTPUT"
 
+      - name: Detect existing sync branch ahead of main
+        id: branch_diff
+        if: steps.sync.outputs.rc != '1'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ahead=$(gh api "repos/${{ github.repository }}/compare/main...auto/upstream-sync" \
+            --jq '.ahead_by // 0' 2>/dev/null || echo 0)
+          echo "ahead=$ahead" >> "$GITHUB_OUTPUT"
+          echo "auto/upstream-sync is $ahead commit(s) ahead of main."
+
       - name: Open or update pull request
-        if: steps.sync.outputs.rc == '3' && steps.push.outputs.pushed == '1'
+        if: |
+          (steps.sync.outputs.rc == '3' && steps.push.outputs.pushed == '1') ||
+          (steps.branch_diff.outputs.ahead != '' && steps.branch_diff.outputs.ahead != '0')
         id: cpr
         continue-on-error: true
         env:
@@ -165,7 +178,9 @@ jobs:
           echo "::warning::Could not create PR after retries: $(tr '\n' ' ' < "$pr_err"). If permissions are already enabled, re-run the workflow or open a PR from the compare link in the job summary."
 
       - name: Upstream sync summary
-        if: steps.sync.outputs.rc == '3' && steps.push.outputs.pushed == '1'
+        if: |
+          (steps.sync.outputs.rc == '3' && steps.push.outputs.pushed == '1') ||
+          (steps.branch_diff.outputs.ahead != '' && steps.branch_diff.outputs.ahead != '0')
         run: |
           compare="https://github.com/${{ github.repository }}/compare/main...auto/upstream-sync?expand=1"
           {
