@@ -20,11 +20,14 @@ jobs:
           done
 
       - name: ShellCheck
-        uses: koalaman/shellcheck-action@v0.9
-        with:
-          scandir: '.'
-          format: gcc
-          severity: error
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shopt -s globstar nullglob
+          for f in *.sh tools/*.sh; do
+            [[ -f "$f" ]] || continue
+            shellcheck -x "$f"
+          done
 
       - name: Verify SHA256 pins
         env:
