@@ -98,6 +98,7 @@ apply_bivlked_delta() {
 cd "$ROOT"
 CHANGES=0
 NOTES=()
+set +e
 
 # --- Observed latest releases (informational; VPS --update pulls binaries) ---
 XRAY_LATEST="$(latest_release_tag XTLS/Xray-core || true)"
@@ -163,7 +164,13 @@ if [[ -n "$BIVLKED_PIN" && -n "$BIVLKED_LATEST" && "$BIVLKED_LATEST" != "$BIVLKE
         done
 
         if [[ "$awg_ok" -eq 1 ]]; then
-            bash "$ROOT/tools/apply_freedom_awg_branding.sh" "$BIVLKED_LATEST"
+            bash "$ROOT/tools/apply_freedom_awg_branding.sh" "$BIVLKED_LATEST" || {
+                awg_ok=0
+                NOTES+=("Freedom branding step failed after AWG patch.")
+                git checkout -- awg_common.sh manage_amneziawg.sh 2>/dev/null || true
+            }
+        fi
+        if [[ "$awg_ok" -eq 1 ]]; then
             VER="${BIVLKED_LATEST#v}"
             sed -i "s/^SCRIPT_VERSION=\"[^\"]*\"/SCRIPT_VERSION=\"${VER}\"/" "$INSTALLER"
             sed -i "s/^UPSTREAM_AWG_PIN=\"[^\"]*\"/UPSTREAM_AWG_PIN=\"${BIVLKED_LATEST}\"/" "$INSTALLER"
@@ -206,7 +213,9 @@ if data.get("freedom_version") != fv:
     data["freedom_version"] = fv
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 PY
-    bash "$ROOT/tools/update_sha_pins.sh"
+    bash "$ROOT/tools/update_sha_pins.sh" || {
+        echo "WARN: update_sha_pins failed; continuing with manifest/report updates." >&2
+    }
 fi
 
 if [[ "$CHANGES" -eq 1 ]]; then

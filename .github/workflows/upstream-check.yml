@@ -65,8 +65,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq patch
-          bash tools/sync_upstream_pr.sh
-          rc=$?
+          bash tools/sync_upstream_pr.sh 2>&1 | tee upstream/sync-step.log
+          rc=${PIPESTATUS[0]}
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
           if [[ "$rc" != "0" && "$rc" != "3" ]]; then
             echo "sync_upstream_pr.sh failed with exit $rc" >&2
