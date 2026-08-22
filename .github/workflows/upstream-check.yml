@@ -192,18 +192,7 @@ jobs:
             if [[ -n "${{ steps.cpr.outputs.pull-request-number }}" ]]; then
               echo ""
               echo "PR: #${{ steps.cpr.outputs.pull-request-number }}"
+              echo ""
+              echo "**CI + merge:** [Upstream sync CI](https://github.com/${{ github.repository }}/actions/workflows/upstream-pr-ci.yml) runs on the PR without approval; [Upstream auto-merge](https://github.com/${{ github.repository }}/actions/workflows/upstream-auto-merge.yml) squash-merges when it passes."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Enable auto-merge when checks pass
-        if: steps.sync.outputs.rc == '3' && steps.cpr.outputs.pull-request-number != ''
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          pr="${{ steps.cpr.outputs.pull-request-number }}"
-          if gh pr merge "$pr" --auto --squash 2>/tmp/gh-auto-merge.err; then
-            echo "Auto-merge (squash) enabled for PR #$pr"
-          else
-            echo "::warning::Auto-merge not enabled for PR #$pr: $(tr '\n' ' ' < /tmp/gh-auto-merge.err)"
-          fi

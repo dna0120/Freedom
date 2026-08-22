@@ -21,9 +21,12 @@ Workflow: [`.github/workflows/upstream-check.yml`](.github/workflows/upstream-ch
    - When bivlked has a newer tag: vendor snapshots under `upstream/vendor/bivlked/<tag>/`, applies the **bivlked old→new diff** onto Freedom’s English `awg_common.sh` / `manage_amneziawg.sh`, re-applies branding, bumps `UPSTREAM_AWG_PIN` / `SCRIPT_VERSION` / `FREEDOM_VERSION`, recomputes SHA256 pins.
 3. Pushes branch `auto/upstream-sync` (always, with `contents: write`).
 4. Tries to open/update a PR via `gh` (optional; needs the repo setting below). If PR creation is blocked, the workflow still **succeeds** — use the **compare link** in the job summary to open a PR manually.
-5. Enables **auto-merge (squash)** when a PR exists and checks pass.
+5. **[Upstream sync CI](.github/workflows/upstream-pr-ci.yml)** (`pull_request_target`) runs checks on bot-opened PRs **without** the `action_required` approval gate that blocks normal `pull_request` CI.
+6. **[Upstream auto-merge](.github/workflows/upstream-auto-merge.yml)** squash-merges the PR when Upstream sync CI passes (do not enable auto-merge manually in the same job — checks are not registered yet).
 
-**Optional (auto-open PR):** GitHub → **Settings → Actions → General → Workflow permissions** → **Read and write permissions** + tick **Allow GitHub Actions to create and approve pull requests**. Without this, push still works; open PR from: `https://github.com/dna0120/Freedom/compare/main...auto/upstream-sync`
+**Repo settings (auto-open PR):** GitHub → **Settings → Actions → General → Workflow permissions** → **Read and write permissions** + tick **Allow GitHub Actions to create and approve pull requests**. Without this, push still works; open PR from: `https://github.com/dna0120/Freedom/compare/main...auto/upstream-sync`
+
+**If an old bot PR is stuck on `action_required`:** close it and re-run **Upstream automation**, or approve the stale **CI** run once; new PRs use Upstream sync CI instead.
 
 If an AWG patch fails, the PR still records the failure in `upstream/SYNC_PR_BODY.md` and skips the pin bump — maintainer cherry-picks manually.
 

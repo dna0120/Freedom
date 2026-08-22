@@ -1,0 +1,67 @@
+name: Upstream sync CI
+
+# Bot-opened PRs (GITHUB_TOKEN) block normal pull_request CI with action_required.
+# pull_request_target runs in the base repo context and does not need approval.
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  shell:
+    if: |
+      (github.event_name == 'pull_request_target' &&
+        github.event.pull_request.head.ref == 'auto/upstream-sync') ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve sync PR head SHA
+        id: head
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sha=$(gh pr list --repo "${{ github.repository }}" \
+            --head auto/upstream-sync --base main --state open \
+            --json headRefOid --jq '.[0].headRefOid // empty')
+          num=$(gh pr list --repo "${{ github.repository }}" \
+            --head auto/upstream-sync --base main --state open \
+            --json number --jq '.[0].number // empty')
+          if [[ -z "$sha" ]]; then
+            echo "No open auto/upstream-sync PR." >&2
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Dispatch CI for PR #$num @ ${sha:0:8}"
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && steps.head.outputs.sha || github.event.pull_request.head.sha }}
+
+      - name: Bash syntax check
+        run: |
+          shopt -s globstar nullglob
+          for f in *.sh tools/*.sh; do
+            [[ -f "$f" ]] || continue
+            bash -n "$f"
+          done
+
+      - name: ShellCheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shopt -s globstar nullglob
+          for f in *.sh tools/*.sh; do
+            [[ -f "$f" ]] || continue
+            shellcheck -x -S error "$f" || exit 1
+          done
+
+      - name: Verify SHA256 pins
+        env:
+          SKIP_RAW_VERIFY: "1"
+        run: bash tools/verify_sha_pins.sh

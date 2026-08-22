@@ -7,6 +7,8 @@ on:
 
 jobs:
   shell:
+    # Bot sync PRs use upstream-pr-ci.yml (pull_request_target, no approval gate).
+    if: github.event_name != 'pull_request' || github.head_ref != 'auto/upstream-sync'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -33,3 +35,22 @@ jobs:
         env:
           SKIP_RAW_VERIFY: ${{ github.event_name == 'pull_request' && '1' || '0' }}
         run: bash tools/verify_sha_pins.sh
+
+  dispatch-upstream-pr-ci:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      pull-requests: read
+    steps:
+      - name: Re-run Upstream sync CI for open bot PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          count=$(gh pr list --repo "${{ github.repository }}" \
+            --head auto/upstream-sync --base main --state open \
+            --json number --jq 'length')
+          if [[ "$count" -gt 0 ]]; then
+            echo "Open sync PR found — dispatching Upstream sync CI."
+            gh workflow run "upstream-pr-ci.yml" --repo "${{ github.repository }}"
+          fi
