@@ -115,25 +115,48 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           body_file=upstream/SYNC_PR_BODY.md
           [[ -f "$body_file" ]] || body_file=/dev/null
+
+          # GitHub may not expose the pushed ref immediately after git push.
+          echo "Waiting for auto/upstream-sync ref to appear..."
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            if gh api "repos/${{ github.repository }}/git/ref/heads/auto/upstream-sync" >/dev/null 2>&1; then
+              echo "Branch ref visible (attempt $i)."
+              break
+            fi
+            if [[ "$i" -eq 10 ]]; then
+              echo "::warning::Branch auto/upstream-sync not visible after 30s; PR create may fail."
+            fi
+            sleep 3
+          done
+
           existing=$(gh pr list --head auto/upstream-sync --base main --json number \
             --jq '.[0].number // empty')
           if [[ -n "$existing" ]]; then
             gh pr comment "$existing" --body-file "$body_file"
             echo "pull-request-number=$existing" >> "$GITHUB_OUTPUT"
             echo "Updated PR #$existing"
-          else
+            exit 0
+          fi
+
+          pr_err=/tmp/gh-pr-create.err
+          num=""
+          for i in 1 2 3 4 5; do
             if num=$(gh pr create --base main --head auto/upstream-sync \
               --title "chore(upstream): automated upstream sync" \
               --body-file "$body_file" \
-              --json number --jq .number 2>/dev/null); then
+              --json number --jq .number 2>"$pr_err"); then
               echo "pull-request-number=$num" >> "$GITHUB_OUTPUT"
-              echo "Opened PR #$num"
-            else
-              echo "::warning::Could not create PR automatically. Enable Workflow permissions → Allow GitHub Actions to create pull requests, or use the compare link in the job summary."
+              echo "Opened PR #$num (attempt $i)"
+              exit 0
             fi
-          fi
+            echo "PR create attempt $i failed: $(tr '\n' ' ' < "$pr_err")"
+            sleep 5
+          done
+
+          echo "::warning::Could not create PR after retries: $(tr '\n' ' ' < "$pr_err"). If permissions are already enabled, re-run the workflow or open a PR from the compare link in the job summary."
 
       - name: Upstream sync summary
         if: steps.sync.outputs.rc == '3' && steps.push.outputs.pushed == '1'
@@ -157,5 +180,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh pr merge "${{ steps.cpr.outputs.pull-request-number }}" --auto --squash \
-            || echo "Auto-merge not enabled; merge the PR manually."
+          pr="${{ steps.cpr.outputs.pull-request-number }}"
+          if gh pr merge "$pr" --auto --squash 2>/tmp/gh-auto-merge.err; then
+            echo "Auto-merge (squash) enabled for PR #$pr"
+          else
+            echo "::warning::Auto-merge not enabled for PR #$pr: $(tr '\n' ' ' < /tmp/gh-auto-merge.err)"
+          fi
