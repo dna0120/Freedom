@@ -6,6 +6,7 @@ on:
   workflow_run:
     workflows: ["Upstream sync CI"]
     types: [completed]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -13,10 +14,7 @@ permissions:
 
 jobs:
   merge-when-green:
-    if: >
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.head_branch == 'auto/upstream-sync'
+    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Squash-merge upstream sync PR
