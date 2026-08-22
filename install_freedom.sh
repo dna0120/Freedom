@@ -19,7 +19,7 @@ fi
 set -o pipefail
 SCRIPT_VERSION="5.21.2"
 # Freedom's own release counter; SCRIPT_VERSION tracks the AmneziaWG upstream.
-FREEDOM_VERSION="1.3.1"
+FREEDOM_VERSION="1.3.2"
 UPSTREAM_AWG_PIN="v5.21.2"
 UPSTREAM_AWG_REPO="bivlked/amneziawg-installer"
 
@@ -64,7 +64,7 @@ HY2_MANAGE_SCRIPT_PATH="$HY2_DIR/manage_hysteria.sh"
 # Format: sha256sum output (hex, 64 chars).
 COMMON_SCRIPT_SHA256="ca3bba0f989ab01775ad91803fb59089cb27039102b594b337bf4299d3f640b4"
 MANAGE_SCRIPT_SHA256="e2a3d155a46ea42505f64e65b8f64dd724cbea3c13d659c3c6749ebdc8f86e6c"
-XRAY_COMMON_SCRIPT_SHA256="5573de510a3e40f80d5b172c8fb36828632b2a6c4ccb817671fb64e0803b458d"
+XRAY_COMMON_SCRIPT_SHA256="4cdc71cc701bfb230c4f041041fd9d7f42281c1dfcb4828491ee27127574a2f5"
 XRAY_MANAGE_SCRIPT_SHA256="880d35faffb67b1f55538d8eb613afa4cd2a37780a426544ec35a314d14e6bf2"
 HY2_COMMON_SCRIPT_SHA256="1584a48d798e38f88d0b9f5bf0226cbba329f40b9ce0c4296b7f5ee6dfe6a7a8"
 HY2_MANAGE_SCRIPT_SHA256="033f1381a965a88a8f800933dab2dcb855096ec8dbd6673b627ee8ddf2877a5e"
@@ -92,6 +92,7 @@ CLI_DNS=""
 CLI_MTU=""
 CLI_BBR=""
 CLI_XRAY_DOMAIN=""
+CLI_XRAY_CDN_OFF=0
 CLI_HY2_DOMAIN=""
 CHECK_UPDATES=0
 APPLY_UPDATES=0
@@ -160,6 +161,7 @@ while [[ $# -gt 0 ]]; do
         --install-hysteria|--install-hy2) INSTALL_HY2_ONLY=1 ;;
         --uninstall-hysteria|--uninstall-hy2) UNINSTALL_HY2=1 ;;
         --xray-domain=*) CLI_XRAY_DOMAIN="${1#*=}" ;;
+        --xray-cdn-off) CLI_XRAY_CDN_OFF=1 ;;
         --hy2-domain=*) CLI_HY2_DOMAIN="${1#*=}" ;;
         --check-updates) CHECK_UPDATES=1 ;;
         --update)        APPLY_UPDATES=1 ;;
@@ -569,6 +571,9 @@ ui_text() {
                 xray_dest_suggest) echo "Dest/SNI đề xuất: %s" ;;
                 xray_cdn_prompt) echo "Bật CDN/TLS front (Cloudflare-friendly domain)? [y/N]: " ;;
                 xray_domain_prompt) echo "Domain cho CDN/TLS (A record trỏ về VPS)" ;;
+                xray_cdn_disable_prompt) echo "Tắt CDN/TLS front (Cloudflare)? [y/N]: " ;;
+                xray_cdn_status_on) echo "CDN/TLS (Cloudflare): đang BẬT — domain %s (XHTTP :%s, gRPC :%s)" ;;
+                xray_cdn_status_off) echo "CDN/TLS (Cloudflare): đang TẮT" ;;
                 xray_not_installed) echo "Xray chưa được cài. Chọn mục 8 trước." ;;
                 hy2_not_installed) echo "Hysteria2 chưa được cài. Chọn mục 15 trước." ;;
                 hy2_domain_prompt) echo "Domain cho Hysteria2 (Enter = self-signed)" ;;
@@ -669,6 +674,9 @@ ui_text() {
                 xray_dest_suggest) echo "Suggested dest/SNI: %s" ;;
                 xray_cdn_prompt) echo "Enable CDN/TLS front (Cloudflare-friendly domain)? [y/N]: " ;;
                 xray_domain_prompt) echo "Domain for CDN/TLS (A record to this VPS)" ;;
+                xray_cdn_disable_prompt) echo "Disable CDN/TLS front (Cloudflare)? [y/N]: " ;;
+                xray_cdn_status_on) echo "CDN/TLS (Cloudflare): ENABLED — domain %s (XHTTP :%s, gRPC :%s)" ;;
+                xray_cdn_status_off) echo "CDN/TLS (Cloudflare): DISABLED" ;;
                 xray_not_installed) echo "Xray is not installed. Choose option 8 first." ;;
                 hy2_not_installed) echo "Hysteria2 is not installed. Choose option 15 first." ;;
                 hy2_domain_prompt) echo "Domain for Hysteria2 (Enter = self-signed)" ;;
@@ -879,6 +887,7 @@ Tùy chọn:
   --install-hysteria    Cài Hysteria2 (QUIC/UDP + Salamander OBFS)
   --uninstall-hysteria  Gỡ Hysteria2
   --xray-domain=FQDN    Bật CDN/TLS front cho Xray với domain này
+  --xray-cdn-off        Tắt CDN/TLS front Xray (giữ REALITY)
   --hy2-domain=FQDN     Domain/ACME cho Hysteria2 (không có = self-signed)
   --check-updates       Kiểm tra bản mới (script Freedom, Xray, Hysteria2, gói AWG)
   --update              Làm mới script Freedom + nâng cấp binary Xray/Hysteria2
@@ -942,6 +951,7 @@ Options:
   --install-hysteria    Install Hysteria2 (QUIC/UDP + Salamander OBFS)
   --uninstall-hysteria  Uninstall Hysteria2 only
   --xray-domain=FQDN    Enable Xray CDN/TLS front with this domain
+  --xray-cdn-off        Disable Xray CDN/TLS front (keep REALITY)
   --hy2-domain=FQDN     Domain/ACME for Hysteria2 (omit = self-signed)
   --check-updates       Report newer Freedom scripts, Xray, Hysteria2, AWG packages
   --update              Refresh Freedom scripts + upgrade Xray/Hysteria2 binaries
@@ -4573,40 +4583,22 @@ step_install_xray() {
 
     XRAY_CDN_ENABLED="${XRAY_CDN_ENABLED:-0}"
     domain="${CLI_XRAY_DOMAIN:-${XRAY_DOMAIN:-}}"
-    if [[ -n "$domain" ]]; then
-        XRAY_CDN_ENABLED=1
+    if [[ "${CLI_XRAY_CDN_OFF:-0}" -eq 1 ]]; then
+        xray_disable_cdn
+    elif [[ -n "$domain" ]]; then
+        xray_enable_cdn "$domain" "$vision_port" "$xhttp_port" "$grpc_port" \
+            || die "Failed to enable CDN/TLS for $domain"
     elif [[ "${AUTO_YES:-0}" -eq 0 ]]; then
         read -rp "$(ui_text xray_cdn_prompt)" cdn_ans < /dev/tty
         if [[ "$cdn_ans" =~ ^[[:space:]]*[Yy]([Ee][Ss])?[[:space:]]*$ ]]; then
-            XRAY_CDN_ENABLED=1
             read -rp "$(ui_text xray_domain_prompt): " domain < /dev/tty
+            xray_enable_cdn "$domain" "$vision_port" "$xhttp_port" "$grpc_port" \
+                || die "Failed to enable CDN/TLS"
+        else
+            xray_disable_cdn
         fi
-    fi
-    if [[ "$XRAY_CDN_ENABLED" -eq 1 ]]; then
-        [[ -n "$domain" ]] || die "CDN/TLS mode requires a domain (--xray-domain= or interactive)."
-        XRAY_DOMAIN="$domain"
-        if [[ -z "${XRAY_CDN_PORT:-}" ]] || ! [[ "${XRAY_CDN_PORT}" =~ ^[0-9]+$ ]]; then
-            if xray_tcp_port_free 443; then
-                XRAY_CDN_PORT=443
-            else
-                XRAY_CDN_PORT="$(xray_pick_free_tcp_port "$vision_port" "$xhttp_port")" \
-                    || die "Could not pick CDN TCP port"
-            fi
-        fi
-        if [[ -z "${XRAY_CDN_GRPC_PORT:-}" ]] || ! [[ "${XRAY_CDN_GRPC_PORT}" =~ ^[0-9]+$ ]]; then
-            XRAY_CDN_GRPC_PORT="$(xray_pick_cdn_grpc_port "$vision_port" "$xhttp_port" "$grpc_port" "${XRAY_CDN_PORT}")" \
-                || XRAY_CDN_GRPC_PORT=2053
-        fi
-        xray_issue_tls_cert "$XRAY_DOMAIN" || die "Failed to issue TLS certificate for $XRAY_DOMAIN"
-        log "CDN/TLS front enabled for ${XRAY_DOMAIN} (XHTTP :${XRAY_CDN_PORT}, gRPC :${XRAY_CDN_GRPC_PORT})."
-        log "Cloudflare tip: orange-cloud A record → this VPS; SSL mode Full (or Full Strict with LE cert)."
     else
-        XRAY_CDN_ENABLED=0
-        XRAY_DOMAIN=""
-        XRAY_CDN_PORT=""
-        XRAY_CDN_GRPC_PORT=""
-        XRAY_TLS_CERT=""
-        XRAY_TLS_KEY=""
+        xray_disable_cdn
     fi
 
     xray_save_config || die "Failed to save $XRAY_CONFIG_FILE"
@@ -4689,6 +4681,46 @@ step_reconfigure_xray() {
     if [[ -n "$input_dest" && "$input_dest" != "$XRAY_SNI" ]]; then
         XRAY_SNI="${input_dest%%:*}"
         XRAY_DEST="$XRAY_SNI"
+    fi
+    echo ""
+    if xray_cdn_enabled; then
+        printf -v _cdn_on "$(ui_text xray_cdn_status_on)" "$XRAY_DOMAIN" "${XRAY_CDN_PORT}" "$(xray_cdn_grpc_port)"
+        log "$_cdn_on"
+        if [[ "${CLI_XRAY_CDN_OFF:-0}" -eq 1 ]]; then
+            xray_disable_cdn
+            log "CDN/TLS front disabled (--xray-cdn-off)."
+        elif [[ -n "${CLI_XRAY_DOMAIN:-}" ]]; then
+            xray_enable_cdn "$CLI_XRAY_DOMAIN" "$XRAY_VISION_PORT" "$XRAY_XHTTP_PORT" "$XRAY_GRPC_PORT" \
+                || die "Failed to enable CDN/TLS"
+        elif [[ "${AUTO_YES:-0}" -eq 0 ]]; then
+            local cdn_off="" input_domain=""
+            read -rp "$(ui_text xray_cdn_disable_prompt)" cdn_off < /dev/tty
+            if [[ "$cdn_off" =~ ^[[:space:]]*[Yy]([Ee][Ss])?[[:space:]]*$ ]]; then
+                xray_disable_cdn
+                log "CDN/TLS front disabled."
+            else
+                read -rp "$(ui_text xray_domain_prompt) [${XRAY_DOMAIN}]: " input_domain < /dev/tty
+                [[ -z "$input_domain" ]] && input_domain="$XRAY_DOMAIN"
+                xray_enable_cdn "$input_domain" "$XRAY_VISION_PORT" "$XRAY_XHTTP_PORT" "$XRAY_GRPC_PORT" \
+                    || die "Failed to refresh CDN/TLS"
+            fi
+        fi
+    else
+        log "$(ui_text xray_cdn_status_off)"
+        if [[ "${CLI_XRAY_CDN_OFF:-0}" -eq 1 ]]; then
+            xray_disable_cdn
+        elif [[ -n "${CLI_XRAY_DOMAIN:-}" ]]; then
+            xray_enable_cdn "$CLI_XRAY_DOMAIN" "$XRAY_VISION_PORT" "$XRAY_XHTTP_PORT" "$XRAY_GRPC_PORT" \
+                || die "Failed to enable CDN/TLS"
+        elif [[ "${AUTO_YES:-0}" -eq 0 ]]; then
+            local cdn_ans="" domain=""
+            read -rp "$(ui_text xray_cdn_prompt)" cdn_ans < /dev/tty
+            if [[ "$cdn_ans" =~ ^[[:space:]]*[Yy]([Ee][Ss])?[[:space:]]*$ ]]; then
+                read -rp "$(ui_text xray_domain_prompt): " domain < /dev/tty
+                xray_enable_cdn "$domain" "$XRAY_VISION_PORT" "$XRAY_XHTTP_PORT" "$XRAY_GRPC_PORT" \
+                    || die "Failed to enable CDN/TLS"
+            fi
+        fi
     fi
     xray_save_config || die "Failed to save Xray config"
     xray_apply_config || die "Failed to apply Xray config"

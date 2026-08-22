@@ -502,6 +502,44 @@ xray_cdn_enabled() {
     [[ "${XRAY_CDN_ENABLED:-0}" == "1" && -n "${XRAY_DOMAIN:-}" && -f "${XRAY_TLS_CERT:-}" && -f "${XRAY_TLS_KEY:-}" ]]
 }
 
+# Turn off CDN/TLS inbounds (Cloudflare front). REALITY inbounds unchanged.
+xray_disable_cdn() {
+    XRAY_CDN_ENABLED=0
+    XRAY_DOMAIN=""
+    XRAY_CDN_PORT=""
+    XRAY_CDN_GRPC_PORT=""
+    XRAY_TLS_CERT=""
+    XRAY_TLS_KEY=""
+}
+
+# Enable or refresh CDN/TLS front. Requires a domain pointing at this VPS (orange-cloud on CF).
+xray_enable_cdn() {
+    local domain="$1"
+    local vision_port="${2:-${XRAY_VISION_PORT:-}}"
+    local xhttp_port="${3:-${XRAY_XHTTP_PORT:-}}"
+    local grpc_port="${4:-${XRAY_GRPC_PORT:-}}"
+    [[ -n "$domain" ]] || { log_error "CDN/TLS requires a domain"; return 1; }
+    XRAY_CDN_ENABLED=1
+    XRAY_DOMAIN="$domain"
+    if [[ -z "${XRAY_CDN_PORT:-}" ]] || ! [[ "${XRAY_CDN_PORT}" =~ ^[0-9]+$ ]]; then
+        if xray_tcp_port_free 443; then
+            XRAY_CDN_PORT=443
+        else
+            XRAY_CDN_PORT="$(xray_pick_free_tcp_port "$vision_port" "$xhttp_port")" \
+                || { log_error "Could not pick CDN TCP port"; return 1; }
+        fi
+    fi
+    if [[ -z "${XRAY_CDN_GRPC_PORT:-}" ]] || ! [[ "${XRAY_CDN_GRPC_PORT}" =~ ^[0-9]+$ ]] \
+        || ! xray_cf_grpc_port_valid "${XRAY_CDN_GRPC_PORT}"; then
+        XRAY_CDN_GRPC_PORT="$(xray_pick_cdn_grpc_port "$vision_port" "$xhttp_port" "$grpc_port" "${XRAY_CDN_PORT}")" \
+            || XRAY_CDN_GRPC_PORT=2053
+    fi
+    xray_issue_tls_cert "$XRAY_DOMAIN" || return 1
+    log "CDN/TLS front enabled for ${XRAY_DOMAIN} (XHTTP :${XRAY_CDN_PORT}, gRPC :${XRAY_CDN_GRPC_PORT})."
+    log "Cloudflare: orange-cloud A record → this VPS; SSL mode Full (or Full Strict with LE cert)."
+    return 0
+}
+
 xray_issue_tls_cert() {
     local domain="$1" email="${2:-admin@$1}"
     local live="/etc/letsencrypt/live/${domain}"

@@ -49,7 +49,8 @@ Chạy lại cùng lệnh cài — mở **menu quản lý động**: chỉ hiệ
 - Trạng thái, gỡ, cấu hình lại
 
 ### Xray
-- Vision + XHTTP + gRPC (REALITY), tuỳ chọn CDN/TLS front
+- Vision + XHTTP + gRPC (REALITY), tuỳ chọn CDN/TLS front (Cloudflare)
+- **Cấu hình lại Xray** trong menu: bật/tắt CDN, đổi domain (hoặc `--xray-domain=` / `--xray-cdn-off`)
 - Quét SNI REALITY; tìm SNI gần VPS ([Reality-SNI-Finder](https://github.com/ShatakVPN/Reality-SNI-Finder))
 - CLI: `sudo bash /root/xray/manage_xray.sh check-sni|discover-sni|add-sni`
 
