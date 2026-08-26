@@ -1,20 +1,20 @@
---- manage_amneziawg.sh	2026-08-22 13:33:43.240078277 +0000
-+++ manage_amneziawg.sh	2026-08-22 13:33:43.619074958 +0000
+--- manage_amneziawg.sh	2026-08-26 11:21:19.602844706 +0000
++++ manage_amneziawg.sh	2026-08-26 11:21:20.032856105 +0000
 @@ -8,14 +8,14 @@
  # ==============================================================================
  # Скрипт для управления пользователями (пирами) AmneziaWG 2.0
  # Автор: @bivlked
 -# Версия: 5.21.2
 -# Дата: 2026-07-22
-+# Версия: 5.27.0
-+# Дата: 2026-08-14
++# Версия: 5.27.1
++# Дата: 2026-08-22
  # Репозиторий: https://github.com/bivlked/amneziawg-installer
  # ==============================================================================
  
  # --- Безопасный режим и Константы ---
  # shellcheck disable=SC2034
 -SCRIPT_VERSION="5.21.2"
-+SCRIPT_VERSION="5.27.0"
++SCRIPT_VERSION="5.27.1"
  set -o pipefail
  AWG_DIR="/root/awg"
  SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"
@@ -29,7 +29,19 @@
      log "Восстановление завершено."
      return 0
  }
-@@ -1221,7 +1226,17 @@
+@@ -1145,7 +1177,10 @@
+         exec {modify_lock_fd}>&-
+         return 1
+     fi
+-    if ! grep -q -E "^${param} = " "$cf"; then
++    # Требуем НЕПУСТОЕ значение: префиксная проверка пропускала строку вида
++    # "AllowedIPs = ", то есть обнуление настройки рапортовалось как успех, а
++    # бэкап при этом удалялся.
++    if ! grep -q -E "^${param} = .+" "$cf"; then
+         log_error "Замена не выполнена для '$param'. Восстановление..."
+         if cp "$bak" "$cf"; then rm -f "$bak"; else log_warn "Ошибка восстановления."; fi
+         exec {modify_lock_fd}>&-
+@@ -1249,7 +1285,17 @@
      # Паттерн из diagnose: точное имя модуля в первом столбце lsmod.
      if lsmod 2>/dev/null | awk '$1 == "amneziawg" {f=1} END {exit !f}'; then
          _c_mod=true
@@ -48,7 +60,7 @@
      else
          # WARN, не ok=0: на userspace-инсталляциях (amneziawg-go, LXC) модуля
          # нет и не будет, а сломанный kernel-путь и так валит сервис/интерфейс.
-@@ -1341,7 +1356,16 @@
+@@ -1369,7 +1415,16 @@
  
      # 1. Kernel module
      if lsmod 2>/dev/null | awk '$1 == "amneziawg" {f=1} END {exit !f}'; then
@@ -66,7 +78,7 @@
      else
          _diag_line FAIL "Модуль ядра amneziawg НЕ загружен"
          echo "        Fix: sudo bash $0 repair-module"
-@@ -2123,6 +2147,9 @@
+@@ -2151,6 +2206,9 @@
  
      regen)
          log "Перегенерация файлов конфигурации и QR..."
@@ -76,7 +88,7 @@
          # --reset-routes (Issue #170): передаём флаг в regenerate_client через
          # ENV - обычный regen сохраняет индивидуальные AllowedIPs клиентов, с
          # флагом ставит всем глобальный режим из awgsetup_cfg.init.
-@@ -2250,6 +2278,9 @@
+@@ -2278,6 +2337,9 @@
  
      restart)
          log "Перезапуск сервиса..."
@@ -86,7 +98,7 @@
          if ! confirm_action "перезапустить" "сервис"; then exit 1; fi
          # Перед systemctl restart убеждаемся, что модуль ядра загружен (mode=module-only,
          # т.к. сам systemctl ниже стартует unit явно — повторный start от ensure избыточен).
-@@ -2262,6 +2293,11 @@
+@@ -2290,6 +2352,11 @@
              while IFS= read -r line; do log_error "  $line"; done <<< "$status_out"
              exit 1
          else
