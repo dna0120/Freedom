@@ -16,6 +16,7 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
+  actions: write
 
 jobs:
   check-and-sync:
@@ -196,3 +197,14 @@ jobs:
               echo "**CI + merge:** [Upstream sync CI](https://github.com/${{ github.repository }}/actions/workflows/upstream-pr-ci.yml) validates and squash-merges bot PRs without approval."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # GITHUB_TOKEN push/PR events do not reliably start pull_request_target workflows.
+      # Dispatch Upstream sync CI explicitly after opening/updating the sync PR.
+      - name: Dispatch Upstream sync CI
+        if: steps.cpr.outputs.pull-request-number != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Dispatching Upstream sync CI for PR #${{ steps.cpr.outputs.pull-request-number }}"
+          gh workflow run upstream-pr-ci.yml --repo "${{ github.repository }}"

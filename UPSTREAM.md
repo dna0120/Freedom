@@ -21,8 +21,8 @@ Workflow: [`.github/workflows/upstream-check.yml`](.github/workflows/upstream-ch
    - When bivlked has a newer tag: vendor snapshots under `upstream/vendor/bivlked/<tag>/`, applies the **bivlked old→new diff** onto Freedom’s English `awg_common.sh` / `manage_amneziawg.sh`, re-applies branding, bumps `UPSTREAM_AWG_PIN` / `SCRIPT_VERSION` / `FREEDOM_VERSION`, recomputes SHA256 pins.
 3. Pushes branch `auto/upstream-sync` (always, with `contents: write`).
 4. Tries to open/update a PR via `gh` (optional; needs the repo setting below). If PR creation is blocked, the workflow still **succeeds** — use the **compare link** in the job summary to open a PR manually.
-5. **[Upstream sync CI](.github/workflows/upstream-pr-ci.yml)** (`pull_request_target`) runs checks on bot-opened PRs **without** the `action_required` gate, then **squash-merges** in the same job when green.
-6. **[Upstream auto-merge](.github/workflows/upstream-auto-merge.yml)** — manual `workflow_dispatch` recovery only.
+5. After opening/updating the PR, Upstream automation **dispatches** [Upstream sync CI](.github/workflows/upstream-pr-ci.yml) via `workflow_dispatch` (events caused by `GITHUB_TOKEN` do not start `pull_request` / `pull_request_target` runs reliably).
+6. Upstream sync CI validates the sync branch and **squash-merges** when green. [Upstream auto-merge](.github/workflows/upstream-auto-merge.yml) remains as manual recovery only.
 
 **Repo settings (auto-open PR):** GitHub → **Settings → Actions → General → Workflow permissions** → **Read and write permissions** + tick **Allow GitHub Actions to create and approve pull requests**. Without this, push still works; open PR from: `https://github.com/dna0120/Freedom/compare/main...auto/upstream-sync`
 
