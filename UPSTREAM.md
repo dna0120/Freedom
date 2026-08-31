@@ -4,7 +4,7 @@ Freedom is a fork-plus-extension. **GitHub Actions** keeps observed upstream rel
 
 | Source | What Freedom uses | How updates land |
 |---|---|---|
-| [bivlked/amneziawg-installer](https://github.com/bivlked/amneziawg-installer) | AWG install/manage scripts | Daily CI: bivlked→bivlked diff onto English helpers → PR → auto-merge when CI passes |
+| [bivlked/amneziawg-installer](https://github.com/bivlked/amneziawg-installer) | AWG install/manage scripts | Daily CI: three-way merge or overlay onto English helpers → PR → auto-merge when sync succeeds |
 | [angristan/wireguard-install](https://github.com/angristan/wireguard-install) | Menu UX reference | Read-only; no code import |
 | [XTLS/Xray-core](https://github.com/XTLS/Xray-core) | Xray binary | `latest_observed` in manifest (CI daily); VPS `--update` installs binary |
 | [apernet/hysteria](https://github.com/apernet/hysteria) | Hysteria2 binary | Same as Xray |
@@ -18,7 +18,7 @@ Workflow: [`.github/workflows/upstream-check.yml`](.github/workflows/upstream-ch
 1. Runs `tools/check_upstream.sh` → `upstream/REPORT.md`; opens/updates issue **Upstream updates available** when a pinned source is behind.
 2. Runs `tools/sync_upstream_pr.sh`:
    - Refreshes `latest_observed` for Xray, Hysteria2, and bivlked in `upstream/manifest.json`.
-   - When bivlked has a newer tag: vendor snapshots under `upstream/vendor/bivlked/<tag>/`, applies the **bivlked old→new diff** onto Freedom’s English `awg_common.sh` / `manage_amneziawg.sh`, re-applies branding, bumps `UPSTREAM_AWG_PIN` / `SCRIPT_VERSION` / `FREEDOM_VERSION`, recomputes SHA256 pins.
+   - When bivlked has a newer tag: vendor snapshots under `upstream/vendor/bivlked/<tag>/`, syncs Freedom’s English `awg_common.sh` / `manage_amneziawg.sh` via **three-way merge** or **overlay fallback**, re-applies branding, bumps `UPSTREAM_AWG_PIN` / `SCRIPT_VERSION` / `FREEDOM_VERSION`, recomputes SHA256 pins.
 3. Pushes branch `auto/upstream-sync` (always, with `contents: write`).
 4. Tries to open/update a PR via `gh` (optional; needs the repo setting below). If PR creation is blocked, the workflow still **succeeds** — use the **compare link** in the job summary to open a PR manually.
 5. After opening/updating the PR, Upstream automation **dispatches** [Upstream sync CI](.github/workflows/upstream-pr-ci.yml) via `workflow_dispatch` (events caused by `GITHUB_TOKEN` do not start `pull_request` / `pull_request_target` runs reliably).
@@ -28,7 +28,38 @@ Workflow: [`.github/workflows/upstream-check.yml`](.github/workflows/upstream-ch
 
 **If an old bot PR is stuck on `action_required`:** close it and re-run **Upstream automation**, or approve the stale **CI** run once; new PRs use Upstream sync CI instead.
 
-If an AWG patch fails, the PR still records the failure in `upstream/SYNC_PR_BODY.md` and skips the pin bump — maintainer cherry-picks manually.
+If AWG sync fails (large pin gap, e.g. v5.21.2 → v5.29.0), the PR still records the failure in `upstream/SYNC_PR_BODY.md` and **skips the pin bump** — maintainer merges once manually, then daily CI can auto-sync smaller jumps.
+
+## One-time AWG catch-up (when auto sync fails)
+
+Large gaps between the pin and bivlked latest need a **manual merge once**; after that, daily CI usually auto-merges incremental tags.
+
+```bash
+# 1) Vendor snapshots (replace tags with manifest pin / latest)
+PIN=v5.21.2 LATEST=v5.29.0
+mkdir -p "upstream/vendor/bivlked/$PIN" "upstream/vendor/bivlked/$LATEST"
+for f in awg_common.sh manage_amneziawg.sh; do
+  curl -fsSL -o "upstream/vendor/bivlked/$PIN/$f" \
+    "https://raw.githubusercontent.com/bivlked/amneziawg-installer/${PIN}/${f}"
+  curl -fsSL -o "upstream/vendor/bivlked/$LATEST/$f" \
+    "https://raw.githubusercontent.com/bivlked/amneziawg-installer/${LATEST}/${f}"
+done
+
+# 2) Three-way merge per file (resolve <<<<<<< conflicts, keep English + Freedom logic)
+for f in awg_common.sh manage_amneziawg.sh; do
+  cp "$f" "${f}.bak"
+  git merge-file "$f" "upstream/vendor/bivlked/$PIN/$f" "upstream/vendor/bivlked/$LATEST/$f"
+  # edit $f until no conflict markers remain
+done
+
+# 3) Branding + pins
+bash tools/apply_freedom_awg_branding.sh "$LATEST"
+# bump UPSTREAM_AWG_PIN, SCRIPT_VERSION, pinned_tag in manifest, FREEDOM_VERSION, then:
+bash tools/update_sha_pins.sh
+bash tools/check_upstream.sh
+```
+
+Open a normal PR (not bot). After merge, cron sync handles v5.29.0 → v5.30.0+ automatically when CI passes.
 
 ## Maintainer check (local)
 

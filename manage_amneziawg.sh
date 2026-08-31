@@ -8,14 +8,14 @@ fi
 # ==============================================================================
 # AmneziaWG 2.0 peer management script
 # Author: @dna0120
-# Version: 5.21.2
-# Date: 2026-07-22
+# Version: 5.29.0
+# Date: 2026-08-31
 # Repository: https://github.com/dna0120/Freedom
 # ==============================================================================
 
 # --- Safe mode and Constants ---
 # shellcheck disable=SC2034
-SCRIPT_VERSION="5.21.2"
+SCRIPT_VERSION="5.29.0"
 set -o pipefail
 AWG_DIR="/root/awg"
 SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"
@@ -971,6 +971,10 @@ restore_backup() {
 
     # Success — rollback not needed, trap only performs cleanup
     _restore_ok=1
+    # Восстановление подменило awg0.conf и пересоздало интерфейс, поэтому снимок
+    # набора device-параметров надо взять заново: он должен описывать то, что
+    # стоит на живом интерфейсе СЕЙЧАС, а не до восстановления.
+    awg_record_device_params
     log "Restore completed."
     return 0
 }
@@ -1121,6 +1125,34 @@ modify_client() {
     fi
     log "Backup: $bak"
 
+    # Списочные параметры приводим к каноническому "a, b, c" (D#38): установщик
+    # пишет их с пробелом после запятой, и modify не должен оставлять в конфиге
+    # второй, слипшийся вариант того же значения.
+    #
+    # 🔴 Проверка наличия функции обязательна. _check_common_compat сверяет
+    # только MAJOR.MINOR и осознанно пропускает расхождение в patch, а
+    # awg_normalize_csv появилась в патче 5.27.1. На полуобновлённом сервере
+    # (свежий manage рядом со старой библиотекой) вызов дал бы пустую строку,
+    # и она молча уехала бы в конфиг вместо списка маршрутов.
+    case "$param" in
+        AllowedIPs|DNS)
+            command -v awg_normalize_csv >/dev/null 2>&1 || {
+                log_error "awg_common.sh is outdated: missing awg_normalize_csv. Update both halves to the same version."
+                exec {modify_lock_fd}>&-
+                return 1
+            }
+            local _norm
+            _norm=$(awg_normalize_csv "$value")
+            [[ -n "$_norm" ]] || {
+                log_error "Normalizing '$param' produced an empty value - change aborted."
+                exec {modify_lock_fd}>&-
+                return 1
+            }
+            value="$_norm"
+            log "Value normalized to: $value"
+            ;;
+    esac
+
     local escaped_value
     escaped_value=$(escape_sed "$value")
     if ! sed -i "s#^${param}[[:space:]]*=[[:space:]]*.*#${param} = ${escaped_value}#" "$cf"; then
@@ -1165,6 +1197,7 @@ check_server() {
     # checks so the data and the verdict come from the same pass.
     local _c_svc_active=false _c_present=false _c_mtu=null _c_addrs=""
     local _c_listen=false _c_mod=false _c_ufw_active=false _c_allowed=false
+    local _c_mod_ver=""
 
     log "Service status:"
     # With --json the raw systemctl output goes to stderr: stdout is contract-only.
@@ -1287,7 +1320,7 @@ check_server() {
         local _c_clients _jok=false
         _c_clients=$(grep -c '^\[Peer\]' "$SERVER_CONF_FILE" 2>/dev/null) || _c_clients=0
         [[ "$ok" -eq 1 ]] && _jok=true
-        json_out "{\"command\":\"check\",\"ok\":$_jok,\"service\":{\"unit\":\"awg-quick@awg0\",\"active\":$_c_svc_active},\"interface\":{\"name\":\"awg0\",\"present\":$_c_present,\"mtu\":$_c_mtu,\"addresses\":[$_c_addrs]},\"port\":{\"number\":$port,\"proto\":\"udp\",\"listening\":$_c_listen},\"module\":{\"loaded\":$_c_mod},\"clients\":{\"total\":$_c_clients},\"firewall\":{\"ufw_active\":$_c_ufw_active,\"port_allowed\":$_c_allowed}}"
+        json_out "{\"command\":\"check\",\"ok\":$_jok,\"service\":{\"unit\":\"awg-quick@awg0\",\"active\":$_c_svc_active},\"interface\":{\"name\":\"awg0\",\"present\":$_c_present,\"mtu\":$_c_mtu,\"addresses\":[$_c_addrs]},\"port\":{\"number\":$port,\"proto\":\"udp\",\"listening\":$_c_listen},\"module\":{\"loaded\":$_c_mod,\"version\":$([[ -n "$_c_mod_ver" ]] && printf '"%s"' "$(json_escape "$_c_mod_ver")" || printf 'null')},\"clients\":{\"total\":$_c_clients},\"firewall\":{\"ufw_active\":$_c_ufw_active,\"port_allowed\":$_c_allowed}}"
     fi
 
     if [[ "$ok" -eq 1 ]]; then
@@ -1354,7 +1387,16 @@ diagnose_server() {
 
     # 1. Kernel module
     if lsmod 2>/dev/null | awk '$1 == "amneziawg" {f=1} END {exit !f}'; then
-        _diag_line OK "Kernel module amneziawg loaded"; ok=$((ok+1))
+        local _d_mod_ver
+        _d_mod_ver=$(awg_module_version)
+        if [[ "$_d_mod_ver" == 3.* ]]; then
+            _diag_line OK "Kernel module amneziawg loaded (AmneziaWG 3.0, $_d_mod_ver)"
+        elif [[ -n "$_d_mod_ver" ]]; then
+            _diag_line OK "Kernel module amneziawg loaded ($_d_mod_ver)"
+        else
+            _diag_line OK "Kernel module amneziawg loaded"
+        fi
+        ok=$((ok+1))
     else
         _diag_line FAIL "Kernel module amneziawg NOT loaded"
         echo "        Fix: sudo bash $0 repair-module"
@@ -2252,6 +2294,7 @@ case $COMMAND in
         ;;
 
     check|status)
+        warn_awg_init_drift
         check_server || _cmd_rc=1
         ;;
 
@@ -2262,10 +2305,12 @@ case $COMMAND in
 
     restart)
         log "Restarting service..."
+        # Предупреждение ДО confirm_action: при --yes/AWG_YES=1 подтверждения не
+        # будет, а отрезать себя от сервера можно и неинтерактивным запуском.
+        awg_warn_interface_disruption
         if ! confirm_action "restart" "service"; then exit 1; fi
-        # Verify kernel module is loaded before systemctl restart (mode=module-only —
-        # the restart below starts the unit explicitly, so an extra start from ensure
-        # would be redundant).
+        # Перед systemctl restart убеждаемся, что модуль ядра загружен (mode=module-only,
+        # т.к. сам systemctl ниже стартует unit явно — повторный start от ensure избыточен).
         ensure_amneziawg_kernel_module module-only \
             || die "amneziawg kernel module unavailable. Run 'manage repair-module' and try again."
         if ! systemctl restart awg-quick@awg0; then
@@ -2275,6 +2320,11 @@ case $COMMAND in
             while IFS= read -r line; do log_error "  $line"; done <<< "$status_out"
             exit 1
         else
+            # Интерфейс пересоздан - снимок набора device-параметров обязан
+            # догнать конфиг. Иначе apply_config сравнивал бы с устаревшим
+            # набором и либо предупреждал впустую, либо ПРОПУСТИЛ бы будущее
+            # снятие молча (если этим перезапуском параметр как раз добавили).
+            awg_record_device_params
             log "Service restarted."
             _jactive=false
             systemctl is-active --quiet awg-quick@awg0 2>/dev/null && _jactive=true

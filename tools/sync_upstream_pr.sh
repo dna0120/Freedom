@@ -67,31 +67,64 @@ download_bivlked() {
     done
 }
 
-apply_bivlked_delta() {
+# Sync Freedom's forked AWG helper with a newer bivlked tag.
+# 1) git merge-file three-way (base=pin, ours=Freedom, theirs=new tag)
+# 2) overlay: copy bivlked@new, re-apply Freedom customizations from diff(pin, Freedom)
+apply_bivlked_sync() {
     local old="$1"
     local new="$2"
     local file="$3"
     local target="$ROOT/$file"
     local oldf="$VENDOR/$old/$file" newf="$VENDOR/$new/$file"
-    local patchf bak
+    local bak patchf rej
     [[ -f "$target" && -f "$oldf" && -f "$newf" ]] || return 1
-    patchf="$(mktemp)"
-    diff -u "$oldf" "$newf" > "$patchf" || true
-    if [[ ! -s "$patchf" ]]; then
-        rm -f "$patchf"
-        echo "No bivlked delta for $file ($old → $new)"
+
+    if diff -q "$oldf" "$newf" >/dev/null 2>&1; then
+        echo "No bivlked changes for $file ($old → $new)"
         return 0
     fi
+
     bak="${target}.sync.bak"
     cp -a "$target" "$bak"
-    if patch --forward --batch "$target" < "$patchf"; then
-        rm -f "$bak" "$patchf"
-        echo "Applied bivlked delta to $file ($old → $new)"
+
+    # --- Strategy A: three-way merge (best for small pin→latest gaps) ---
+    cp -a "$bak" "$target"
+    set +e
+    git merge-file "$target" "$oldf" "$newf"
+    local merge_rc=$?
+    set -e
+    if [[ "$merge_rc" -eq 0 ]]; then
+        rm -f "$bak"
+        echo "Applied three-way merge to $file ($old → $new)"
         return 0
     fi
+    if [[ "$merge_rc" -eq 1 ]] && ! grep -q '^<<<<<<<' "$target" 2>/dev/null; then
+        rm -f "$bak"
+        echo "Applied three-way merge to $file ($old → $new, minor conflicts auto-resolved)"
+        return 0
+    fi
+
+    # --- Strategy B: bivlked@new + Freedom overlay (English/branding on top of upstream) ---
+    cp -a "$newf" "$target"
+    patchf="$(mktemp)"
+    diff -u "$oldf" "$bak" > "$patchf" || true
+    if [[ -s "$patchf" ]]; then
+        set +e
+        patch --forward --batch --fuzz=3 "$target" < "$patchf"
+        local patch_rc=$?
+        set -e
+        rej="${target}.rej"
+        if [[ "$patch_rc" -eq 0 && ! -f "$rej" ]]; then
+            rm -f "$bak" "$patchf"
+            echo "Applied overlay sync to $file ($old → $new)"
+            return 0
+        fi
+        rm -f "$rej"
+    fi
+
     mv -f "$bak" "$target"
     rm -f "$patchf"
-    echo "ERROR: patch failed for $file ($old → $new)" >&2
+    echo "ERROR: AWG sync failed for $file ($old → $new) — three-way and overlay both failed" >&2
     return 1
 }
 
@@ -156,9 +189,9 @@ if [[ -n "$BIVLKED_PIN" && -n "$BIVLKED_LATEST" && "$BIVLKED_LATEST" != "$BIVLKE
     else
         awg_ok=1
         for f in awg_common.sh manage_amneziawg.sh; do
-            if ! apply_bivlked_delta "$BIVLKED_PIN" "$BIVLKED_LATEST" "$f"; then
+            if ! apply_bivlked_sync "$BIVLKED_PIN" "$BIVLKED_LATEST" "$f"; then
                 awg_ok=0
-                NOTES+=("AWG patch failed for \`$f\` — manual cherry-pick required (see vendor diff).")
+                NOTES+=("AWG sync failed for \`$f\` — manual cherry-pick required (see \`upstream/vendor/bivlked/\`).")
                 git checkout -- "$f" 2>/dev/null || true
             fi
         done
