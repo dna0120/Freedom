@@ -1,23 +1,41 @@
---- manage_amneziawg.sh	2026-08-30 11:09:11.045038036 +0000
-+++ manage_amneziawg.sh	2026-08-30 11:09:11.199042635 +0000
+--- manage_amneziawg.sh	2026-08-31 12:34:16.885112304 +0000
++++ manage_amneziawg.sh	2026-08-31 12:34:16.998112580 +0000
 @@ -8,14 +8,14 @@
  # ==============================================================================
  # Скрипт для управления пользователями (пирами) AmneziaWG 2.0
  # Автор: @bivlked
 -# Версия: 5.21.2
 -# Дата: 2026-07-22
-+# Версия: 5.28.1
-+# Дата: 2026-08-27
++# Версия: 5.29.0
++# Дата: 2026-08-30
  # Репозиторий: https://github.com/bivlked/amneziawg-installer
  # ==============================================================================
  
  # --- Безопасный режим и Константы ---
  # shellcheck disable=SC2034
 -SCRIPT_VERSION="5.21.2"
-+SCRIPT_VERSION="5.28.1"
++SCRIPT_VERSION="5.29.0"
  set -o pipefail
  AWG_DIR="/root/awg"
  SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"
+@@ -39,7 +39,7 @@
+ 
+ # Путь пишем в переменную по имени (printf -v), БЕЗ command substitution: при
+ # td=$(manage_mktempdir) append в _manage_temp_dirs уходил в сабшелл и терялся,
+-# а cleanup на INT/TERM/EXIT эти папки не удалял (audit 5kag). Вызов:
++# а cleanup на INT/TERM/EXIT эти папки не удалял. Вызов:
+ # manage_mktempdir_var td || die ...
+ manage_mktempdir_var() {
+     local __rv="$1" __d
+@@ -274,7 +274,7 @@
+     if [[ "$type" == "ERROR" || "$type" == "WARN" ]]; then
+         printf "${color_start}%s${color_end}\n" "$entry" >&2
+     elif [[ "${JSON_OUTPUT:-0}" -eq 1 ]]; then
+-        # weaq P2: в режиме --json stdout обязан содержать ТОЛЬКО JSON (jq/automation).
++        # В режиме --json stdout обязан содержать ТОЛЬКО JSON (jq/automation).
+         # INFO/DEBUG уводим в stderr, иначе list/show/stats --json печатают INFO-строки
+         # перед JSON и ломают парсинг (подтверждено на biHetzner).
+         printf "${color_start}%s${color_end}\n" "$entry" >&2
 @@ -957,6 +957,10 @@
  
      # Успех — rollback не нужен, trap выполнит только cleanup
