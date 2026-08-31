@@ -62,7 +62,7 @@ HY2_MANAGE_SCRIPT_PATH="$HY2_DIR/manage_hysteria.sh"
 # SHA256 checksums of downloaded scripts. Updated at each release.
 # Verified in step5_download_scripts() after curl.
 # Format: sha256sum output (hex, 64 chars).
-COMMON_SCRIPT_SHA256="7eab0e2cc1214f7784253d54d9f53ade3cfebba9afd3028aa09fe8aeb9ca4464"
+COMMON_SCRIPT_SHA256="63c1c24aeba7fa0eccc38fa9724b293d6fb3a5f93d9e03883049fe963a2f210a"
 MANAGE_SCRIPT_SHA256="7c28a76a6b2cbf1be99260ad05a661355c61f6d33eab6ed4d2659423a3f48aeb"
 XRAY_COMMON_SCRIPT_SHA256="4cdc71cc701bfb230c4f041041fd9d7f42281c1dfcb4828491ee27127574a2f5"
 XRAY_MANAGE_SCRIPT_SHA256="880d35faffb67b1f55538d8eb613afa4cd2a37780a426544ec35a314d14e6bf2"

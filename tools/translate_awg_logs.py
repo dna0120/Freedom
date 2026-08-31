@@ -85,7 +85,7 @@ REPLACEMENTS = [
     ),
     (
         'log_warn "  сами мы этого не делаем. Если вы уже перезапускали сервис вручную,"',
-        'log_warn "  we do not do this automatically. If you already restarted manually,',
+        'log_warn "  we do not do this automatically. If you already restarted manually,"',
     ),
     (
         'log_warn "  предупреждение можно игнорировать: после успешного применения снимок"',

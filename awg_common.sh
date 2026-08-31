@@ -1930,7 +1930,7 @@ apply_config() {
         log_warn "  To apply removal, recreate the interface:"
         log_warn "    systemctl restart awg-quick@awg0"
         log_warn "  This will drop all client connections for a few seconds, so"
-        log_warn "  we do not do this automatically. If you already restarted manually,
+        log_warn "  we do not do this automatically. If you already restarted manually,"
         log_warn "  you may ignore this warning: after a successful apply the snapshot"
         log_warn "  will update and this message will not appear on the next run."
     fi
