@@ -8,14 +8,14 @@ fi
 # ==============================================================================
 # AmneziaWG 2.0 peer management script
 # Author: @dna0120
-# Version: 5.29.0
-# Date: 2026-08-31
+# Version: 5.30.0
+# Date: 2026-09-01
 # Repository: https://github.com/dna0120/Freedom
 # ==============================================================================
 
 # --- Safe mode and Constants ---
 # shellcheck disable=SC2034
-SCRIPT_VERSION="5.29.0"
+SCRIPT_VERSION="5.30.0"
 set -o pipefail
 AWG_DIR="/root/awg"
 SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"
@@ -1373,7 +1373,64 @@ _diag_line() {
     printf "%b[%-4s]%b %s\n" "$color_start" "$status" "$color_end" "$msg"
 }
 
-# Main: runs health-checks + optional carrier comparison
+# Главная функция: пробегается по health-checks + опционально сравнивает с оператором
+# _diag_cps_guard : размер CPS из КОНФИГА, до любого `awg show` В ДИАГНОСТИКЕ.
+# ⚠️ Это утверждение про diagnose, а не про весь скрипт: у check, stats, show
+# и list своей проверки размера нет, они защищены только таймаутом.
+#
+# Отдельной функцией, а не куском diagnose_server, по двум причинам. Во-первых,
+# так её можно прогнать в тесте: `source` самого скрипта запускает main и
+# печатает справку, а извлечение функции awk-диапазоном - принятый здесь приём.
+# Во-вторых, у блока появляется имя, по которому видно, что он делает.
+#
+# Пишет в вызывающего две переменные: `_cps_unsafe` (1 = дальше интерфейс не
+# читать) и `warn` (счётчик предупреждений диагностики).
+_diag_cps_guard() {
+    # 0. Размер CPS - СЧИТАЕТСЯ ИЗ ФАЙЛА И ДО ЛЮБОГО `awg show`.
+    # Порядок тут не стилистический. Дальше I1 читается из `awg show`, а именно
+    # этот вызов и зависает, когда I1-I5 слишком велики: дамп интерфейса
+    # перестаёт продвигаться и повторяется бесконечно (upstream #228). Проверка,
+    # стоящая после него, не напечаталась бы никогда - ровно в том случае, ради
+    # которого написана.
+    local _cps_i _cps_total=0 _cps_vals=()
+    local _cps_rc=0
+    if [[ -r "$SERVER_CONF_FILE" ]]; then
+        for _cps_i in I1 I2 I3 I4 I5; do
+            _cps_vals+=("$(sed -n "s/^[[:space:]]*${_cps_i}[[:space:]]*=[[:space:]]*//p" "$SERVER_CONF_FILE" | head -n 1)")
+        done
+        _cps_total=$(awg_cps_decoded_size "${_cps_vals[@]}") || _cps_rc=$?
+        # Порог с запасом. Апстрим называет опасной зоной примерно 3.5 КБ, но
+        # точная граница зависит от длины имени интерфейса, наличия ключа защиты
+        # заголовков и семейства адреса каждого пира, то есть считать её у себя
+        # мы не можем. Наш генератор даёт максимум 256 байт, документированные
+        # рецепты - до 128, поэтому килобайт заведомо означает правку руками, а
+        # до зацикливания остаётся кратный запас.
+        if [[ "$_cps_total" =~ ^[0-9]+$ && "$_cps_total" -gt 1024 ]]; then
+            _cps_unsafe=1
+            _diag_line WARN "CPS (I1-I5) uses ${_cps_total} bytes - that is large"
+            echo "        Oversized I1-I5 can hang interface reads: the dump stops advancing"
+            echo "        and repeats forever; on a router that can crash the device."
+            # Путь берём из переменной, а не литералом: сообщение обязано
+            # называть тот файл, который мы прочитали.
+            echo "        Fix: shorten I1-I5 in $SERVER_CONF_FILE, then"
+            echo "        sudo systemctl restart awg-quick@awg0"
+            warn=$((warn+1))
+        elif [[ "$_cps_rc" -ne 0 || ! "$_cps_total" =~ ^[0-9]+$ ]]; then
+            # Разобрать не удалось. Занижение неотличимо от «размер маленький»,
+            # поэтому молчать нельзя: считаем размер небезопасным и говорим об
+            # этом, а не выдаём непроверенное за проверенное.
+            _cps_unsafe=1
+            _diag_line WARN "could not determine CPS (I1-I5) size - unrecognized tags in config"
+            warn=$((warn+1))
+        fi
+    else
+        # Тот же класс: «не смог прочитать» обязано звучать, иначе следующий
+        # шаг пойдёт на опасный дамп с видом, будто проверка прошла.
+        _cps_unsafe=1
+        _diag_line WARN "config $SERVER_CONF_FILE not readable - CPS size not checked"
+        warn=$((warn+1))
+    fi
+}
 diagnose_server() {
     local carrier="${CLI_CARRIER}"
     local ok=0 warn=0 fail=0
@@ -1385,14 +1442,28 @@ diagnose_server() {
         return 1
     fi
 
+    local _cps_unsafe=0
+    _diag_cps_guard
+
     # 1. Kernel module
     if lsmod 2>/dev/null | awk '$1 == "amneziawg" {f=1} END {exit !f}'; then
-        local _d_mod_ver
+        local _d_mod_ver _d_mod_build
+        # 🔴 Поколение протокола по строке версии НЕ выводим. Здесь стояла
+        # догадка `== 3.*` -> литерал "AmneziaWG 3.0", и она врала: замер на
+        # стенде 30 aug 2026 дал `3.1.20260812` и для сборки PPA от 14 aug, и
+        # для сборки от 28 aug, то есть 3.1-модуль объявлялся третьей нулевой.
+        # Тот же запрет уже стоял в check выше ("не выводим протокол по
+        # догадке"), но этот путь его не соблюдал.
+        # Сборку различают srcversion и версия пакета - их и печатаем: без них
+        # отчёт не отвечает на вопрос, какая сборка у пользователя.
         _d_mod_ver=$(awg_module_version)
-        if [[ "$_d_mod_ver" == 3.* ]]; then
-            _diag_line OK "Kernel module amneziawg loaded (AmneziaWG 3.0, $_d_mod_ver)"
+        _d_mod_build=$(awg_module_build_id)
+        if [[ -n "$_d_mod_ver" && -n "$_d_mod_build" ]]; then
+            _diag_line OK "Kernel module amneziawg loaded (version $_d_mod_ver; $_d_mod_build)"
         elif [[ -n "$_d_mod_ver" ]]; then
-            _diag_line OK "Kernel module amneziawg loaded ($_d_mod_ver)"
+            _diag_line OK "Kernel module amneziawg loaded (version $_d_mod_ver)"
+        elif [[ -n "$_d_mod_build" ]]; then
+            _diag_line OK "Kernel module amneziawg loaded ($_d_mod_build)"
         else
             _diag_line OK "Kernel module amneziawg loaded"
         fi
@@ -1482,21 +1553,88 @@ diagnose_server() {
     fi
 
     # 7. Peer count
-    local peer_count
-    peer_count=$(awg show awg0 peers 2>/dev/null | wc -l)
-    _diag_line INFO "Peers configured: $peer_count"
+    # 🔴 Дамп интерфейса пропускается, если размер CPS признан небезопасным:
+    # предупредить и тут же полезть в тот самый вызов, который зацикливается,
+    # значит не защитить никого. Таймаут ограничивает время, но не память, а
+    # растущий читатель на роутере как раз память и съедает.
+    local peer_count _peers_out _show_rc=0
+    if [[ "$_cps_unsafe" -eq 1 ]]; then
+        _diag_line WARN "interface read skipped due to CPS size (see above)"
+        warn=$((warn+1))
+    elif _peers_out=$(timeout 10 awg show awg0 peers 2>/dev/null); then
+        peer_count=$(printf '%s\n' "$_peers_out" | grep -c . || true)
+        _diag_line INFO "Peers configured: $peer_count"
+    else
+        # 🔴 Раньше здесь стоял конвейер с `wc -l`, и код возврата терялся в
+        # нём целиком: при таймауте печаталось «Peers сконфигурировано: 0», то
+        # есть «не смог проверить» читалось как «проверил, пиров нет». Код 124
+        # называется отдельно - он означает ровно тот зацикленный дамп, ради
+        # которого написана вся эта проверка.
+        _show_rc=$?
+        if [[ "$_show_rc" -eq 124 ]]; then
+            _diag_line FAIL "awg show did not respond within 10 seconds - likely a stuck interface dump"
+            fail=$((fail+1))
+            # 🔴 Зацикливание живёт на ИНТЕРФЕЙСЕ, а сторож читает ФАЙЛ, и эти
+            # два состояния расходятся: у выполнившего наш же совет «сократить
+            # I1-I5» файл уже мал, а интерфейс ещё нет. Раз вызов только что
+            # завис, шаг 8 обязан в него не ходить - иначе мы удваиваем ровно
+            # ту экспозицию, ради которой всё это написано.
+            _cps_unsafe=1
+        else
+            _diag_line WARN "awg show exited with code $_show_rc - peer count unknown"
+            warn=$((warn+1))
+        fi
+    fi
 
-    # 8. AWG params snapshot (one awg show call instead of four)
-    local _awg_show jc jmin jmax i1
-    _awg_show=$(awg show awg0 2>/dev/null)
-    jc=$(awk '/^[[:space:]]*jc:/   {print $2; exit}' <<< "$_awg_show")
-    jmin=$(awk '/^[[:space:]]*jmin:/ {print $2; exit}' <<< "$_awg_show")
-    jmax=$(awk '/^[[:space:]]*jmax:/ {print $2; exit}' <<< "$_awg_show")
-    i1=$(awk -F': ' '/^[[:space:]]*i1:/ {print $2; exit}' <<< "$_awg_show")
-    _diag_line INFO "AWG params: Jc=${jc:-?} Jmin=${jmin:-?} Jmax=${jmax:-?} I1=${i1:-absent}"
+    # 8. AWG params snapshot (один вызов awg show вместо четырёх)
+    # 🔴 Состояние ТРЁХЗНАЧНОЕ, а не «строка пустая». Пустая строка одинаково
+    # означает «параметра нет» и «мы до интерфейса не дошли», и это
+    # противоположные утверждения: сторож срабатывает ровно тогда, когда I1
+    # огромен, а прежняя форма ${i1:-absent} печатала в этот момент
+    # «I1=absent». Соврать про I1 в отчёте о слишком большом I1 - худшее, что
+    # эта команда могла сделать.
+    local _awg_show="" _awg_read=0 _show2_rc=0 jc jmin jmax i1
+    if [[ "$_cps_unsafe" -ne 1 ]]; then
+        # stderr не выбрасываем: полоса ВЫШЕ зацикливания отвечает
+        # `Unable to access interface: Message too long`, и это единственная
+        # строка, которая называет причину. Голый код возврата вместо неё -
+        # потеря диагностики на ровном месте.
+        if _awg_show=$(timeout 10 awg show awg0 2>&1); then
+            _awg_read=1
+        else
+            _show2_rc=$?
+            if [[ "$_show2_rc" -eq 124 ]]; then
+                _diag_line FAIL "awg show did not respond within 10 seconds - interface parameters not read"
+                fail=$((fail+1))
+                _cps_unsafe=1
+            else
+                _diag_line WARN "awg show exited with code $_show2_rc - interface parameters not read${_awg_show:+: ${_awg_show%%$'\n'*}}"
+                warn=$((warn+1))
+            fi
+            _awg_show=""
+        fi
+    fi
+    if [[ "$_awg_read" -eq 1 ]]; then
+        jc=$(awk '/^[[:space:]]*jc:/   {print $2; exit}' <<< "$_awg_show")
+        jmin=$(awk '/^[[:space:]]*jmin:/ {print $2; exit}' <<< "$_awg_show")
+        jmax=$(awk '/^[[:space:]]*jmax:/ {print $2; exit}' <<< "$_awg_show")
+        i1=$(awk -F': ' '/^[[:space:]]*i1:/ {print $2; exit}' <<< "$_awg_show")
+        _diag_line INFO "AWG params: Jc=${jc:-?} Jmin=${jmin:-?} Jmax=${jmax:-?} I1=${i1:-absent}"
+    else
+        _diag_line INFO "AWG params: interface not read, values not checked"
+    fi
 
     # 9. Carrier comparison
-    if [[ -n "$carrier" ]]; then
+    # 🔴 Сравнивать непрочитанное нельзя. У профиля со значением i1_mode=absent
+    # проверка `[[ -z "$i1" ]]` на непрочитанном интерфейсе давала зелёный OK
+    # «I1 отсутствует» - галочку, удостоверяющую ровно то условие, из-за
+    # которого мы отказались смотреть, да ещё и в итоговом счётчике.
+    if [[ -n "$carrier" && "$_awg_read" -ne 1 ]]; then
+        echo ""
+        log "Comparing against carrier profile '$carrier'..."
+        _diag_line WARN "skipped: interface parameters not read, nothing to compare"
+        warn=$((warn+1))
+    elif [[ -n "$carrier" ]]; then
         echo ""
         log "Comparing against carrier profile '$carrier'..."
         local row
@@ -1613,8 +1751,23 @@ list_clients() {
 
     # Single-pass awg show dump parsing: pubkey → handshake timestamp
     local -A _pk_to_hs
-    local awg_dump
-    awg_dump=$(awg show awg0 dump 2>/dev/null) || awg_dump=""
+    # 🔴 Пустой дамп НЕ означает «ни у кого нет рукопожатия». Таймаут добавлен
+    # этим же релизом, и без разбора отказа он превратил заметное зависание в
+    # правдоподобную и полностью неверную таблицу: всем клиентам «Нет
+    # handshake», в --json тем же составом. Честное состояние в коде уже есть -
+    # это дефолт "Нет данных"/no_data, надо просто его не затирать.
+    local awg_dump _dump_ok=0 _dump_rc=0
+    if awg_dump=$(timeout 10 awg show awg0 dump 2>/dev/null); then
+        _dump_ok=1
+    else
+        _dump_rc=$?
+        awg_dump=""
+        if [[ "$_dump_rc" -eq 124 ]]; then
+            log_warn "awg show dump did not respond within 10 seconds - client state unknown (likely stuck dump: check I1-I5 size)"
+        else
+            log_warn "awg show dump exited with code $_dump_rc - client state unknown"
+        fi
+    fi
     if [[ -n "$awg_dump" ]]; then
         # shellcheck disable=SC2034
         while IFS=$'\t' read -r _dpk _dpsk _dep _daips _dhs _drx _dtx _dka; do
@@ -1679,7 +1832,11 @@ list_clients() {
 
             local current_pk="${_name_to_pk[$name]:-}"
 
-            if [[ -n "$current_pk" ]]; then
+            if [[ -n "$current_pk" && "$_dump_ok" -ne 1 ]]; then
+                # Ключ известен, состояние интерфейса - нет. Оставляем дефолт
+                # "Нет данных"/no_data: он и означает «не смотрели».
+                pk="${current_pk:0:10}..."
+            elif [[ -n "$current_pk" ]]; then
                 pk="${current_pk:0:10}..."
                 local handshake="${_pk_to_hs[$current_pk]:-0}"
                 if [[ "$handshake" =~ ^[0-9]+$ && "$handshake" -gt 0 ]]; then

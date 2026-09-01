@@ -57,9 +57,10 @@ def resolve_block(ours: str, theirs: str, filename: str) -> str:
     if is_header_block(ours, theirs):
         # Freedom English header; version bumped later by branding script
         out = ours
-        out = re.sub(r'Version: 5\.21\.2', 'Version: 5.29.0', out)
-        out = re.sub(r'AWG_COMMON_VERSION="5\.21\.2"', 'AWG_COMMON_VERSION="5.29.0"', out)
-        out = re.sub(r'SCRIPT_VERSION="5\.21\.2"', 'SCRIPT_VERSION="5.29.0"', out)
+        # Version fields bumped later by apply_freedom_awg_branding.sh
+        out = re.sub(r'Version: [\d.]+', 'Version: 5.30.0', out)
+        out = re.sub(r'AWG_COMMON_VERSION="[\d.]+"', 'AWG_COMMON_VERSION="5.30.0"', out)
+        out = re.sub(r'SCRIPT_VERSION="[\d.]+"', 'SCRIPT_VERSION="5.30.0"', out)
         return out
 
     if prefer_theirs_functionality(ours, theirs):

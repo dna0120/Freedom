@@ -9,7 +9,7 @@ Freedom is a fork-plus-extension. **GitHub Actions** keeps observed upstream rel
 | [XTLS/Xray-core](https://github.com/XTLS/Xray-core) | Xray binary | `latest_observed` in manifest (CI daily); VPS `--update` installs binary |
 | [apernet/hysteria](https://github.com/apernet/hysteria) | Hysteria2 binary | Same as Xray |
 
-Pinned AWG installer tag: [`upstream/manifest.json`](upstream/manifest.json) (`bivlked-awg.pinned_tag`) and `UPSTREAM_AWG_PIN` in `install_freedom.sh`. Current pin: **v5.21.2**.
+Pinned AWG installer tag: [`upstream/manifest.json`](upstream/manifest.json) (`bivlked-awg.pinned_tag`) and `UPSTREAM_AWG_PIN` in `install_freedom.sh`. Current pin: **v5.30.0**.
 
 ## Automated GitHub sync (daily)
 

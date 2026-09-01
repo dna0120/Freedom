@@ -152,6 +152,87 @@ REPLACEMENTS = [
         'log "Сервис перезапущен."',
         'log "Service restarted."',
     ),
+    # v5.30.0 diagnose / list (CPS guard, awg show timeouts)
+    (
+        '_diag_line WARN "CPS (I1-I5) занимает ${_cps_total} байт - это много"',
+        '_diag_line WARN "CPS (I1-I5) uses ${_cps_total} bytes - that is large"',
+    ),
+    (
+        'echo "        Слишком большие I1-I5 подвешивают чтение интерфейса: дамп перестаёт"',
+        'echo "        Oversized I1-I5 can hang interface reads: the dump stops advancing"',
+    ),
+    (
+        'echo "        продвигаться и повторяется бесконечно, а на роутере это роняет устройство."',
+        'echo "        and repeats forever; on a router that can crash the device."',
+    ),
+    (
+        'echo "        Fix: сократить I1-I5 в $SERVER_CONF_FILE, затем"',
+        'echo "        Fix: shorten I1-I5 in $SERVER_CONF_FILE, then"',
+    ),
+    (
+        '_diag_line WARN "размер CPS (I1-I5) определить не удалось - в конфиге нераспознанные теги"',
+        '_diag_line WARN "could not determine CPS (I1-I5) size - unrecognized tags in config"',
+    ),
+    (
+        '_diag_line WARN "конфиг $SERVER_CONF_FILE не прочитан - размер CPS не проверен"',
+        '_diag_line WARN "config $SERVER_CONF_FILE not readable - CPS size not checked"',
+    ),
+    (
+        '_diag_line OK "Модуль ядра amneziawg загружен (версия $_d_mod_ver; $_d_mod_build)"',
+        '_diag_line OK "Kernel module amneziawg loaded (version $_d_mod_ver; $_d_mod_build)"',
+    ),
+    (
+        '_diag_line OK "Модуль ядра amneziawg загружен (версия $_d_mod_ver)"',
+        '_diag_line OK "Kernel module amneziawg loaded (version $_d_mod_ver)"',
+    ),
+    (
+        '_diag_line OK "Модуль ядра amneziawg загружен ($_d_mod_build)"',
+        '_diag_line OK "Kernel module amneziawg loaded ($_d_mod_build)"',
+    ),
+    (
+        '_diag_line WARN "чтение интерфейса пропущено из-за размера CPS (см. выше)"',
+        '_diag_line WARN "interface read skipped due to CPS size (see above)"',
+    ),
+    (
+        '_diag_line INFO "Peers сконфигурировано: $peer_count"',
+        '_diag_line INFO "Peers configured: $peer_count"',
+    ),
+    (
+        '_diag_line FAIL "awg show не ответил за 10 секунд - похоже на зацикленный дамп интерфейса"',
+        '_diag_line FAIL "awg show did not respond within 10 seconds - likely a stuck interface dump"',
+    ),
+    (
+        '_diag_line WARN "awg show завершился с кодом $_show_rc - число пиров не определено"',
+        '_diag_line WARN "awg show exited with code $_show_rc - peer count unknown"',
+    ),
+    (
+        '_diag_line FAIL "awg show не ответил за 10 секунд - параметры интерфейса не прочитаны"',
+        '_diag_line FAIL "awg show did not respond within 10 seconds - interface parameters not read"',
+    ),
+    (
+        '_diag_line WARN "awg show завершился с кодом $_show2_rc - параметры интерфейса не прочитаны${_awg_show:+: ${_awg_show%%$\'\\n\'*}}"',
+        '_diag_line WARN "awg show exited with code $_show2_rc - interface parameters not read${_awg_show:+: ${_awg_show%%$\'\\n\'*}}"',
+    ),
+    (
+        '_diag_line INFO "AWG params: интерфейс не прочитан, значения не проверялись"',
+        '_diag_line INFO "AWG params: interface not read, values not checked"',
+    ),
+    (
+        'log "Сравнение с профилем оператора \'$carrier\'..."',
+        'log "Comparing against carrier profile \'$carrier\'..."',
+    ),
+    (
+        '_diag_line WARN "пропущено: параметры интерфейса не прочитаны, сравнивать не с чем"',
+        '_diag_line WARN "skipped: interface parameters not read, nothing to compare"',
+    ),
+    (
+        'log_warn "awg show dump не ответил за 10 секунд - состояние клиентов неизвестно (похоже на зацикленный дамп: проверьте размер I1-I5)"',
+        'log_warn "awg show dump did not respond within 10 seconds - client state unknown (likely stuck dump: check I1-I5 size)"',
+    ),
+    (
+        'log_warn "awg show dump завершился с кодом $_dump_rc - состояние клиентов неизвестно"',
+        'log_warn "awg show dump exited with code $_dump_rc - client state unknown"',
+    ),
 ]
 
 
