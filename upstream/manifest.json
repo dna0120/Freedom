@@ -6,7 +6,7 @@
       "name": "AmneziaWG installer (bivlked)",
       "repo": "bivlked/amneziawg-installer",
       "pinned_tag": "v5.29.0",
-      "latest_observed": "v5.29.0",
+      "latest_observed": "v5.30.0",
       "track": "releases",
       "files": [
         "install_amneziawg_en.sh",
