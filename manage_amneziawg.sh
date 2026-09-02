@@ -40,7 +40,7 @@ _manage_temp_dirs=()
 # The path is written to a named variable (printf -v), NOT via command
 # substitution: with td=$(manage_mktempdir) the append to _manage_temp_dirs
 # happened in the subshell and was lost, so cleanup on INT/TERM/EXIT never
-# removed those dirs (audit 5kag). Call: manage_mktempdir_var td || die ...
+# removed those dirs. Call: manage_mktempdir_var td || die ...
 manage_mktempdir_var() {
     local __rv="$1" __d
     __d=$(mktemp -d) || return 1
@@ -273,12 +273,12 @@ log_msg() {
         echo "[$ts] ERROR: Log write error $LOG_FILE" >&2
     fi
 
-    # WARN and ERROR go to stderr (symmetry with install_freedom.sh:110+,
+    # WARN and ERROR go to stderr (symmetry with install_amneziawg.sh:110+,
     # important for CI/automation parsing: stdout = "data", stderr = "diagnostics").
     if [[ "$type" == "ERROR" || "$type" == "WARN" ]]; then
         printf "${color_start}%s${color_end}\n" "$entry" >&2
     elif [[ "${JSON_OUTPUT:-0}" -eq 1 ]]; then
-        # weaq P2: in --json mode stdout must contain ONLY JSON (jq/automation).
+        # In --json mode stdout must contain ONLY JSON (jq/automation).
         # Route INFO/DEBUG to stderr, otherwise list/show/stats --json print INFO
         # lines before the JSON and break parsing (confirmed on biHetzner).
         printf "${color_start}%s${color_end}\n" "$entry" >&2
@@ -971,9 +971,9 @@ restore_backup() {
 
     # Success — rollback not needed, trap only performs cleanup
     _restore_ok=1
-    # Восстановление подменило awg0.conf и пересоздало интерфейс, поэтому снимок
-    # набора device-параметров надо взять заново: он должен описывать то, что
-    # стоит на живом интерфейсе СЕЙЧАС, а не до восстановления.
+    # The restore replaced awg0.conf and recreated the interface, so the
+    # device-parameter snapshot has to be taken again: it must describe what is
+    # on the live interface NOW, not what was there before the restore.
     awg_record_device_params
     log "Restore completed."
     return 0
@@ -1125,31 +1125,47 @@ modify_client() {
     fi
     log "Backup: $bak"
 
-    # Списочные параметры приводим к каноническому "a, b, c" (D#38): установщик
-    # пишет их с пробелом после запятой, и modify не должен оставлять в конфиге
-    # второй, слипшийся вариант того же значения.
+    # List-valued parameters are normalised to the canonical "a, b, c" form
+    # (D#38): the installer writes them with a space after each comma, and
+    # modify must not leave a second, collapsed variant of the same value in
+    # the config.
     #
-    # 🔴 Проверка наличия функции обязательна. _check_common_compat сверяет
-    # только MAJOR.MINOR и осознанно пропускает расхождение в patch, а
-    # awg_normalize_csv появилась в патче 5.27.1. На полуобновлённом сервере
-    # (свежий manage рядом со старой библиотекой) вызов дал бы пустую строку,
-    # и она молча уехала бы в конфиг вместо списка маршрутов.
+    # 🔴 Checking that the function exists is mandatory. _check_common_compat
+    # compares MAJOR.MINOR only and deliberately tolerates a patch-level drift,
+    # while awg_normalize_csv arrived in the 5.27.1 patch. On a half-updated
+    # server (a fresh manage next to an old library) the call would return an
+    # empty string, and that would silently replace the list of routes.
     case "$param" in
         AllowedIPs|DNS)
             command -v awg_normalize_csv >/dev/null 2>&1 || {
-                log_error "awg_common.sh is outdated: missing awg_normalize_csv. Update both halves to the same version."
+                log_error "awg_common.sh is out of date: awg_normalize_csv is missing. Update both halves to the same version."
                 exec {modify_lock_fd}>&-
                 return 1
             }
             local _norm
             _norm=$(awg_normalize_csv "$value")
             [[ -n "$_norm" ]] || {
-                log_error "Normalizing '$param' produced an empty value - change aborted."
+                log_error "Normalising '$param' produced an empty value - the change was cancelled."
                 exec {modify_lock_fd}>&-
                 return 1
             }
             value="$_norm"
-            log "Value normalized to: $value"
+            log "Value normalised to: $value"
+            # modify writes exactly what it was asked for - that is its contract,
+            # and it is also how people drop ::/0 when they want working IPv6.
+            # But if the given list is a full tunnel WITHOUT ::/0, the client
+            # loses the route that add and regen hand it, and its IPv6 goes
+            # around the tunnel again. Public recipes of the shape
+            # `modify <name> AllowedIPs "$ALLOWED_IPS"` do precisely that.
+            # The value is written as asked, but staying silent is not an option.
+            # No need to check that _is_full_tunnel exists here:
+            # check_dependencies calls _check_common_compat BEFORE the command
+            # dispatch and dies on a MAJOR.MINOR mismatch, so "a fresh manage
+            # next to an old library" never reaches this point.
+            if [[ "$param" == "AllowedIPs" && "$value" != *:* ]] \
+               && _is_full_tunnel "$value"; then
+                log_warn "AllowedIPs of client '$name' is a full tunnel without ::/0 - the device's IPv6 will go around the tunnel with its real address. To restore the route: regen '$name'."
+            fi
             ;;
     esac
 
@@ -1163,7 +1179,10 @@ modify_client() {
         exec {modify_lock_fd}>&-
         return 1
     fi
-    if ! grep -q -E "^${param} = " "$cf"; then
+    # An empty value is not accepted: the prefix-only check matched a line like
+    # "AllowedIPs = ", so wiping a setting was reported as success while the
+    # backup was deleted.
+    if ! grep -q -E "^${param} = .+" "$cf"; then
         log_error "Replacement failed for '$param'. Restoring..."
         if cp "$bak" "$cf"; then rm -f "$bak"; else log_warn "Restore error."; fi
         exec {modify_lock_fd}>&-
@@ -1267,7 +1286,17 @@ check_server() {
     # Pattern from diagnose: exact module name in the first lsmod column.
     if lsmod 2>/dev/null | awk '$1 == "amneziawg" {f=1} END {exit !f}'; then
         _c_mod=true
-        log " - amneziawg module is loaded."
+        # Module version: the 3.0 line starts with 3., the 2.0 one with 1.
+        # (upstream tag names have never tracked the protocol version, so we
+        #  print the raw value instead of guessing the protocol from it).
+        # awg_module_version asks the LOADED module and keeps modinfo (the file
+        # on disk) as the second path - see the note at the function in awg_common.sh.
+        _c_mod_ver=$(awg_module_version)
+        if [[ -n "$_c_mod_ver" ]]; then
+            log " - amneziawg module is loaded (version $_c_mod_ver)."
+        else
+            log " - amneziawg module is loaded."
+        fi
     else
         # WARN, not ok=0: userspace installs (amneziawg-go, LXC) never have
         # the module, and a broken kernel path already fails service/interface.
@@ -1302,8 +1331,13 @@ check_server() {
     # Previously awg show was called via process substitution without an exit
     # code check, so check could report "Status OK" even when awg crashed.
     # Now we capture the output and check the exit code (audit).
-    local _awg_out
-    if ! _awg_out=$(awg show awg0 2>&1); then
+    local _awg_out _check_rc=0
+    # timeout: without it oversized I1-I5 hang check outright
+    # (amneziawg-linux-kernel-module#228). The failure here was already loud;
+    # what was missing is a bound on time.
+    if ! _awg_out=$(timeout 10 awg show awg0 2>&1); then
+        _check_rc=$?
+        [[ "$_check_rc" -eq 124 ]] && _awg_out="awg show did not answer within 10 seconds - looks like a looping interface dump, check the size of I1-I5"
         log_error " - awg show awg0 failed:"
         while IFS= read -r _l; do log_error "  $_l"; done <<< "$_awg_out"
         ok=0
@@ -1373,25 +1407,25 @@ _diag_line() {
     printf "%b[%-4s]%b %s\n" "$color_start" "$status" "$color_end" "$msg"
 }
 
-# Главная функция: пробегается по health-checks + опционально сравнивает с оператором
-# _diag_cps_guard : размер CPS из КОНФИГА, до любого `awg show` В ДИАГНОСТИКЕ.
-# ⚠️ Это утверждение про diagnose, а не про весь скрипт: у check, stats, show
-# и list своей проверки размера нет, они защищены только таймаутом.
+# Main: runs health-checks + optional carrier comparison
+# _diag_cps_guard : CPS size from the CONFIG, before any `awg show`
+# IN DIAGNOSE. ⚠️ That claim is about diagnose, not about the whole script:
+# check, stats, show and list have no size check of their own and are
+# protected by a timeout alone.
 #
-# Отдельной функцией, а не куском diagnose_server, по двум причинам. Во-первых,
-# так её можно прогнать в тесте: `source` самого скрипта запускает main и
-# печатает справку, а извлечение функции awk-диапазоном - принятый здесь приём.
-# Во-вторых, у блока появляется имя, по которому видно, что он делает.
+# A function rather than a slab inside diagnose_server, for two reasons. First,
+# it can then be exercised by a test: sourcing the script itself runs main and
+# prints the usage text, whereas extracting a function by an awk range is the
+# established approach here. Second, the block gets a name that says what it is.
 #
-# Пишет в вызывающего две переменные: `_cps_unsafe` (1 = дальше интерфейс не
-# читать) и `warn` (счётчик предупреждений диагностики).
+# Writes two variables into the caller: `_cps_unsafe` (1 = do not read the
+# interface further on) and `warn` (the diagnostic warning counter).
 _diag_cps_guard() {
-    # 0. Размер CPS - СЧИТАЕТСЯ ИЗ ФАЙЛА И ДО ЛЮБОГО `awg show`.
-    # Порядок тут не стилистический. Дальше I1 читается из `awg show`, а именно
-    # этот вызов и зависает, когда I1-I5 слишком велики: дамп интерфейса
-    # перестаёт продвигаться и повторяется бесконечно (upstream #228). Проверка,
-    # стоящая после него, не напечаталась бы никогда - ровно в том случае, ради
-    # которого написана.
+    # 0. CPS size - COMPUTED FROM THE FILE AND BEFORE ANY `awg show`.
+    # The order here is not cosmetic. Further down I1 is read from `awg show`,
+    # and that very call is what hangs when I1-I5 grow too large: the interface
+    # dump stops advancing and repeats forever (upstream #228). A check placed
+    # after it would never print - in exactly the case it exists for.
     local _cps_i _cps_total=0 _cps_vals=()
     local _cps_rc=0
     if [[ -r "$SERVER_CONF_FILE" ]]; then
@@ -1399,38 +1433,39 @@ _diag_cps_guard() {
             _cps_vals+=("$(sed -n "s/^[[:space:]]*${_cps_i}[[:space:]]*=[[:space:]]*//p" "$SERVER_CONF_FILE" | head -n 1)")
         done
         _cps_total=$(awg_cps_decoded_size "${_cps_vals[@]}") || _cps_rc=$?
-        # Порог с запасом. Апстрим называет опасной зоной примерно 3.5 КБ, но
-        # точная граница зависит от длины имени интерфейса, наличия ключа защиты
-        # заголовков и семейства адреса каждого пира, то есть считать её у себя
-        # мы не можем. Наш генератор даёт максимум 256 байт, документированные
-        # рецепты - до 128, поэтому килобайт заведомо означает правку руками, а
-        # до зацикливания остаётся кратный запас.
+        # A threshold with room to spare. Upstream puts the dangerous zone at
+        # roughly 3.5 KB, but the exact boundary depends on the interface name
+        # length, on whether a header protection key is set, and on each peer's
+        # address family, so we cannot compute it here. Our generator produces
+        # at most 256 bytes and the documented recipes up to 128, so a kilobyte
+        # already means a hand edit, with a multiple of headroom left.
         if [[ "$_cps_total" =~ ^[0-9]+$ && "$_cps_total" -gt 1024 ]]; then
             _cps_unsafe=1
-            _diag_line WARN "CPS (I1-I5) uses ${_cps_total} bytes - that is large"
-            echo "        Oversized I1-I5 can hang interface reads: the dump stops advancing"
-            echo "        and repeats forever; on a router that can crash the device."
-            # Путь берём из переменной, а не литералом: сообщение обязано
-            # называть тот файл, который мы прочитали.
+            _diag_line WARN "CPS (I1-I5) takes ${_cps_total} bytes - that is a lot"
+            echo "        Oversized I1-I5 hang the interface read: the dump stops advancing and"
+            echo "        repeats forever, which on a router is enough to take the box down."
+            # The path comes from the variable rather than a literal: the
+            # message must name the file we actually read.
             echo "        Fix: shorten I1-I5 in $SERVER_CONF_FILE, then"
             echo "        sudo systemctl restart awg-quick@awg0"
             warn=$((warn+1))
         elif [[ "$_cps_rc" -ne 0 || ! "$_cps_total" =~ ^[0-9]+$ ]]; then
-            # Разобрать не удалось. Занижение неотличимо от «размер маленький»,
-            # поэтому молчать нельзя: считаем размер небезопасным и говорим об
-            # этом, а не выдаём непроверенное за проверенное.
+            # Parsing failed. An under-count is indistinguishable from "the
+            # size is small", so silence is not an option: treat the size as
+            # unsafe and say so, rather than passing unchecked off as checked.
             _cps_unsafe=1
-            _diag_line WARN "could not determine CPS (I1-I5) size - unrecognized tags in config"
+            _diag_line WARN "could not determine the CPS (I1-I5) size - unrecognised tags in the config"
             warn=$((warn+1))
         fi
     else
-        # Тот же класс: «не смог прочитать» обязано звучать, иначе следующий
-        # шаг пойдёт на опасный дамп с видом, будто проверка прошла.
+        # Same class: "could not read" has to be audible, or the next step
+        # walks into the dangerous dump as if the check had passed.
         _cps_unsafe=1
-        _diag_line WARN "config $SERVER_CONF_FILE not readable - CPS size not checked"
+        _diag_line WARN "could not read $SERVER_CONF_FILE - CPS size not checked"
         warn=$((warn+1))
     fi
 }
+
 diagnose_server() {
     local carrier="${CLI_CARRIER}"
     local ok=0 warn=0 fail=0
@@ -1448,14 +1483,14 @@ diagnose_server() {
     # 1. Kernel module
     if lsmod 2>/dev/null | awk '$1 == "amneziawg" {f=1} END {exit !f}'; then
         local _d_mod_ver _d_mod_build
-        # 🔴 Поколение протокола по строке версии НЕ выводим. Здесь стояла
-        # догадка `== 3.*` -> литерал "AmneziaWG 3.0", и она врала: замер на
-        # стенде 30 aug 2026 дал `3.1.20260812` и для сборки PPA от 14 aug, и
-        # для сборки от 28 aug, то есть 3.1-модуль объявлялся третьей нулевой.
-        # Тот же запрет уже стоял в check выше ("не выводим протокол по
-        # догадке"), но этот путь его не соблюдал.
-        # Сборку различают srcversion и версия пакета - их и печатаем: без них
-        # отчёт не отвечает на вопрос, какая сборка у пользователя.
+        # 🔴 Do NOT derive the protocol generation from the version string. A
+        # guess `== 3.*` -> the literal "AmneziaWG 3.0" used to live here, and it
+        # lied: a bench measurement on 30 aug 2026 read `3.1.20260812` from both
+        # the PPA build of 14 aug and the one of 28 aug, so a 3.1 module was
+        # announced as 3.0. The same ban was already written down in check above
+        # ("do not print the protocol from a guess"); this path ignored it.
+        # srcversion and the package version are what tell builds apart, so we
+        # print those: without them the report cannot say which build is loaded.
         _d_mod_ver=$(awg_module_version)
         _d_mod_build=$(awg_module_build_id)
         if [[ -n "$_d_mod_ver" && -n "$_d_mod_build" ]]; then
@@ -1553,32 +1588,32 @@ diagnose_server() {
     fi
 
     # 7. Peer count
-    # 🔴 Дамп интерфейса пропускается, если размер CPS признан небезопасным:
-    # предупредить и тут же полезть в тот самый вызов, который зацикливается,
-    # значит не защитить никого. Таймаут ограничивает время, но не память, а
-    # растущий читатель на роутере как раз память и съедает.
+    # 🔴 The interface dump is skipped when the CPS size is judged unsafe:
+    # warning and then walking straight into the very call that loops protects
+    # nobody. A timeout bounds time, not memory, and on a router it is the
+    # growing reader that eats the memory.
     local peer_count _peers_out _show_rc=0
     if [[ "$_cps_unsafe" -eq 1 ]]; then
-        _diag_line WARN "interface read skipped due to CPS size (see above)"
+        _diag_line WARN "interface read skipped because of the CPS size (see above)"
         warn=$((warn+1))
     elif _peers_out=$(timeout 10 awg show awg0 peers 2>/dev/null); then
         peer_count=$(printf '%s\n' "$_peers_out" | grep -c . || true)
         _diag_line INFO "Peers configured: $peer_count"
     else
-        # 🔴 Раньше здесь стоял конвейер с `wc -l`, и код возврата терялся в
-        # нём целиком: при таймауте печаталось «Peers сконфигурировано: 0», то
-        # есть «не смог проверить» читалось как «проверил, пиров нет». Код 124
-        # называется отдельно - он означает ровно тот зацикленный дамп, ради
-        # которого написана вся эта проверка.
+        # 🔴 This used to be a pipeline into `wc -l`, which swallowed the
+        # exit code whole: on a timeout it printed "Peers configured: 0", so
+        # "could not check" read as "checked, no peers". Code 124 is named
+        # separately - it means exactly the looping dump this whole check
+        # exists for.
         _show_rc=$?
         if [[ "$_show_rc" -eq 124 ]]; then
-            _diag_line FAIL "awg show did not respond within 10 seconds - likely a stuck interface dump"
+            _diag_line FAIL "awg show did not answer within 10 seconds - looks like a looping interface dump"
             fail=$((fail+1))
-            # 🔴 Зацикливание живёт на ИНТЕРФЕЙСЕ, а сторож читает ФАЙЛ, и эти
-            # два состояния расходятся: у выполнившего наш же совет «сократить
-            # I1-I5» файл уже мал, а интерфейс ещё нет. Раз вызов только что
-            # завис, шаг 8 обязан в него не ходить - иначе мы удваиваем ровно
-            # ту экспозицию, ради которой всё это написано.
+            # 🔴 The loop lives on the INTERFACE while the guard reads the
+            # FILE, and the two states diverge: someone who followed our own
+            # advice to shrink I1-I5 has a small file and an unchanged
+            # interface. The call just hung, so step 8 must not go back into
+            # it - that would double the very exposure this exists to prevent.
             _cps_unsafe=1
         else
             _diag_line WARN "awg show exited with code $_show_rc - peer count unknown"
@@ -1586,25 +1621,24 @@ diagnose_server() {
         fi
     fi
 
-    # 8. AWG params snapshot (один вызов awg show вместо четырёх)
-    # 🔴 Состояние ТРЁХЗНАЧНОЕ, а не «строка пустая». Пустая строка одинаково
-    # означает «параметра нет» и «мы до интерфейса не дошли», и это
-    # противоположные утверждения: сторож срабатывает ровно тогда, когда I1
-    # огромен, а прежняя форма ${i1:-absent} печатала в этот момент
-    # «I1=absent». Соврать про I1 в отчёте о слишком большом I1 - худшее, что
-    # эта команда могла сделать.
+    # 8. AWG params snapshot (one awg show call instead of four)
+    # 🔴 The state is THREE-VALUED, not "the string is empty". An empty string
+    # means both "the parameter is absent" and "we never reached the
+    # interface", and those are opposite claims: the guard fires precisely
+    # when I1 is huge, and the old ${i1:-absent} form printed "I1=absent" at
+    # that exact moment. Lying about I1 in a report about an oversized I1 is
+    # the worst thing this command could do.
     local _awg_show="" _awg_read=0 _show2_rc=0 jc jmin jmax i1
     if [[ "$_cps_unsafe" -ne 1 ]]; then
-        # stderr не выбрасываем: полоса ВЫШЕ зацикливания отвечает
-        # `Unable to access interface: Message too long`, и это единственная
-        # строка, которая называет причину. Голый код возврата вместо неё -
-        # потеря диагностики на ровном месте.
+        # stderr is kept: the band ABOVE looping answers `Unable to access
+        # interface: Message too long`, the only line that names the cause.
+        # Replacing it with a bare exit code throws diagnostics away.
         if _awg_show=$(timeout 10 awg show awg0 2>&1); then
             _awg_read=1
         else
             _show2_rc=$?
             if [[ "$_show2_rc" -eq 124 ]]; then
-                _diag_line FAIL "awg show did not respond within 10 seconds - interface parameters not read"
+                _diag_line FAIL "awg show did not answer within 10 seconds - interface parameters not read"
                 fail=$((fail+1))
                 _cps_unsafe=1
             else
@@ -1625,14 +1659,14 @@ diagnose_server() {
     fi
 
     # 9. Carrier comparison
-    # 🔴 Сравнивать непрочитанное нельзя. У профиля со значением i1_mode=absent
-    # проверка `[[ -z "$i1" ]]` на непрочитанном интерфейсе давала зелёный OK
-    # «I1 отсутствует» - галочку, удостоверяющую ровно то условие, из-за
-    # которого мы отказались смотреть, да ещё и в итоговом счётчике.
+    # 🔴 There is nothing to compare when nothing was read. For a profile with
+    # i1_mode=absent the `[[ -z "$i1" ]]` test on an unread interface produced
+    # a green OK "I1 absent" - a tick certifying the very condition that made
+    # us refuse to look, and it fed the summary counter too.
     if [[ -n "$carrier" && "$_awg_read" -ne 1 ]]; then
         echo ""
         log "Comparing against carrier profile '$carrier'..."
-        _diag_line WARN "skipped: interface parameters not read, nothing to compare"
+        _diag_line WARN "skipped: interface parameters were not read, nothing to compare"
         warn=$((warn+1))
     elif [[ -n "$carrier" ]]; then
         echo ""
@@ -1751,11 +1785,12 @@ list_clients() {
 
     # Single-pass awg show dump parsing: pubkey → handshake timestamp
     local -A _pk_to_hs
-    # 🔴 Пустой дамп НЕ означает «ни у кого нет рукопожатия». Таймаут добавлен
-    # этим же релизом, и без разбора отказа он превратил заметное зависание в
-    # правдоподобную и полностью неверную таблицу: всем клиентам «Нет
-    # handshake», в --json тем же составом. Честное состояние в коде уже есть -
-    # это дефолт "Нет данных"/no_data, надо просто его не затирать.
+    # 🔴 An empty dump does NOT mean "nobody has a handshake". The timeout was
+    # added in this same release, and without handling the failure it turned a
+    # visible hang into a plausible, entirely wrong table: every client shown
+    # as "No handshake", and the same under --json. The honest state already
+    # exists in the code as the "No data"/no_data default; it just has to
+    # survive.
     local awg_dump _dump_ok=0 _dump_rc=0
     if awg_dump=$(timeout 10 awg show awg0 dump 2>/dev/null); then
         _dump_ok=1
@@ -1763,7 +1798,7 @@ list_clients() {
         _dump_rc=$?
         awg_dump=""
         if [[ "$_dump_rc" -eq 124 ]]; then
-            log_warn "awg show dump did not respond within 10 seconds - client state unknown (likely stuck dump: check I1-I5 size)"
+            log_warn "awg show dump did not answer within 10 seconds - client state unknown (looks like a looping dump: check the size of I1-I5)"
         else
             log_warn "awg show dump exited with code $_dump_rc - client state unknown"
         fi
@@ -1833,8 +1868,9 @@ list_clients() {
             local current_pk="${_name_to_pk[$name]:-}"
 
             if [[ -n "$current_pk" && "$_dump_ok" -ne 1 ]]; then
-                # Ключ известен, состояние интерфейса - нет. Оставляем дефолт
-                # "Нет данных"/no_data: он и означает «не смотрели».
+                # The key is known, the interface state is not. Keep the
+                # "No data"/no_data default: that is what "not looked at"
+                # means.
                 pk="${current_pk:0:10}..."
             elif [[ -n "$current_pk" ]]; then
                 pk="${current_pk:0:10}..."
@@ -1941,9 +1977,14 @@ stats_clients() {
     fi
 
     # Get awg show data
-    local awg_dump
-    awg_dump=$(awg show awg0 dump 2>/dev/null) || {
-        log_error "Failed to get awg show data."
+    local awg_dump _stats_rc=0
+    awg_dump=$(timeout 10 awg show awg0 dump 2>/dev/null) || {
+        _stats_rc=$?
+        if [[ "$_stats_rc" -eq 124 ]]; then
+            log_error "awg show dump did not answer within 10 seconds - looks like a looping interface dump, check the size of I1-I5."
+        else
+            log_error "Failed to get awg show data."
+        fi
         return 1
     }
 
@@ -2335,6 +2376,9 @@ case $COMMAND in
 
     regen)
         log "Regenerating config and QR files..."
+        # Editing AWG_* in awgsetup_cfg.init after the install does not reach
+        # clients (awg0.conf is the source of truth). That used to be silent (#196).
+        warn_awg_init_drift
         # --reset-routes (Issue #170): pass the flag to regenerate_client via
         # ENV - a regular regen preserves per-client AllowedIPs, with the flag
         # every client gets the global routing mode from awgsetup_cfg.init.
@@ -2457,17 +2501,26 @@ case $COMMAND in
 
     show)
         log "AmneziaWG 2.0 status..."
-        if ! awg show; then log_error "awg show error."; _cmd_rc=1; fi
+        if ! timeout 10 awg show; then
+            _show_cmd_rc=$?
+            if [[ "$_show_cmd_rc" -eq 124 ]]; then
+                log_error "awg show did not answer within 10 seconds - looks like a looping interface dump, check the size of I1-I5."
+            else
+                log_error "awg show failed."
+            fi
+            _cmd_rc=1
+        fi
         ;;
 
     restart)
         log "Restarting service..."
-        # Предупреждение ДО confirm_action: при --yes/AWG_YES=1 подтверждения не
-        # будет, а отрезать себя от сервера можно и неинтерактивным запуском.
+        # Warn BEFORE confirm_action: with --yes/AWG_YES=1 there is no prompt, and
+        # a non-interactive run can cut you off from the server just as well.
         awg_warn_interface_disruption
         if ! confirm_action "restart" "service"; then exit 1; fi
-        # Перед systemctl restart убеждаемся, что модуль ядра загружен (mode=module-only,
-        # т.к. сам systemctl ниже стартует unit явно — повторный start от ensure избыточен).
+        # Verify kernel module is loaded before systemctl restart (mode=module-only —
+        # the restart below starts the unit explicitly, so an extra start from ensure
+        # would be redundant).
         ensure_amneziawg_kernel_module module-only \
             || die "amneziawg kernel module unavailable. Run 'manage repair-module' and try again."
         if ! systemctl restart awg-quick@awg0; then
@@ -2477,10 +2530,10 @@ case $COMMAND in
             while IFS= read -r line; do log_error "  $line"; done <<< "$status_out"
             exit 1
         else
-            # Интерфейс пересоздан - снимок набора device-параметров обязан
-            # догнать конфиг. Иначе apply_config сравнивал бы с устаревшим
-            # набором и либо предупреждал впустую, либо ПРОПУСТИЛ бы будущее
-            # снятие молча (если этим перезапуском параметр как раз добавили).
+            # The interface has been recreated, so the device-parameter snapshot
+            # must catch up with the config. Otherwise apply_config would compare
+            # against a stale set and either warn for nothing or MISS a future
+            # removal silently (if this restart is what added the parameter).
             awg_record_device_params
             log "Service restarted."
             _jactive=false

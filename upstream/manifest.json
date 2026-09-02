@@ -1,5 +1,5 @@
 {
-  "freedom_version": "1.3.5",
+  "freedom_version": "1.3.6",
   "sources": [
     {
       "id": "bivlked-awg",
@@ -9,11 +9,10 @@
       "latest_observed": "v5.31.0",
       "track": "releases",
       "files": [
-        "install_amneziawg_en.sh",
-        "awg_common.sh",
-        "manage_amneziawg.sh"
+        "awg_common_en.sh",
+        "manage_amneziawg_en.sh"
       ],
-      "note": "Freedom forked this installer. CI applies bivlked→bivlked diffs onto English helpers; manual review on patch failure."
+      "note": "Freedom tracks bivlked's official English helpers. CI three-way merges them and re-applies tools/apply_freedom_awg_overlay.py; the sync fails loudly if an overlay rule stops matching."
     },
     {
       "id": "xray-core",

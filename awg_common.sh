@@ -229,42 +229,41 @@ _cidr_bounds() {
     echo "$net $bcast"
 }
 
-# --- Полный туннель: решение по СВОЙСТВУ набора маршрутов, а не по строке ---
+# --- Full tunnel: decided by the PROPERTY of the route set, not by a string ---
 
-# Диапазоны IPv4, отсутствие которых в AllowedIPs НЕ делает туннель раздельным.
-# Это список ДОПУСКА, а НЕ описание того, что исключает какой-либо режим: наш
-# дефолтный список исключает только 0/8, 10/8, 172.16/12, 192.168/16 и 224/3, а
-# остальные диапазоны таблицы он как раз ведёт в туннель. Путать эти две вещи
-# опасно: по прочтению 'режимы оставляют их вне туннеля' кто-нибудь выровняет
-# генератор списка под таблицу и молча изменит состав дефолтного туннеля.
-# Состав - это ПОЛИТИКА, а не механика, поэтому основания названы явно: частные
-# сети (10/8, 172.16/12, 192.168/16) и CGNAT (100.64/10) живут у провайдера и в
-# домашней сети; 0/8, 127/8 и 169.254/16 не маршрутизируются; 192.0.0/24 отдан
-# под назначения IETF, 192.0.2/24, 198.51.100/24 и 203.0.113/24 - под примеры в
-# документации, 198.18/15 - под замеры производительности; 224/3 - это
-# multicast, зарезервированное пространство и широковещательный адрес. Ни один
-# класс не является местом, куда пользователь ходит через VPN, поэтому их
-# отсутствие полноте туннеля не мешает.
-# Порядок возрастающий и без пересечений - на этом держится проход в
-# _awg_ipv4_range_is_non_public.
+# IPv4 ranges whose absence from AllowedIPs does NOT make a tunnel split.
+# This is a TOLERANCE list, NOT a description of what any mode excludes: our
+# default list leaves out only 0/8, 10/8, 172.16/12, 192.168/16 and 224/3, and
+# routes the rest of this table into the tunnel. Confusing the two is dangerous:
+# read as "the modes leave these outside the tunnel", it invites someone to
+# align the list generator with this table and silently change what the default
+# tunnels. The contents are POLICY rather than mechanics, so the grounds are
+# named: private networks (10/8, 172.16/12, 192.168/16) and CGNAT (100.64/10)
+# live at the ISP and on the home network; 0/8, 127/8 and 169.254/16 are not
+# routed; 192.0.0/24 is IETF protocol assignments, 192.0.2/24, 198.51.100/24 and
+# 203.0.113/24 are documentation examples, 198.18/15 is benchmarking; 224/3 is
+# multicast, reserved space and the broadcast address. None of these is a place
+# a user reaches through the VPN, so their absence does not make the tunnel any
+# less full.
+# Ascending and non-overlapping - the sweep in _awg_ipv4_range_is_non_public
+# relies on that.
 _AWG_NON_PUBLIC_IPV4=(
     0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16
     172.16.0.0/12 192.0.0.0/24 192.0.2.0/24 192.168.0.0/16
     198.18.0.0/15 198.51.100.0/24 203.0.113.0/24 224.0.0.0/3
 )
 
-# _awg_ipv4_range_is_non_public <lo> <hi> : целиком ли интервал [lo, hi] лежит
-# внутри служебных диапазонов. Проход по отсортированному списку с курсором:
-# каждый диапазон либо остался позади, либо обязан начинаться не дальше курсора,
-# иначе между ними публичный адрес - и ответ отрицательный.
+# _awg_ipv4_range_is_non_public <lo> <hi> : does [lo, hi] lie entirely inside
+# the non-public ranges? Sweep with a cursor: every range is either already
+# behind the cursor or must start no later than it, otherwise a public address
+# sits in between and the answer is no.
 _awg_ipv4_range_is_non_public() {
     local hi="$2" cidr b slo shi cur="$1"
     for cidr in "${_AWG_NON_PUBLIC_IPV4[@]}"; do
         b=$(_cidr_bounds "$cidr") || {
-            # Таблица - константа, поэтому отказ здесь означает испорченный код,
-            # а не пользовательский ввод. Молчаливое 'раздельный' в этом месте
-            # выглядело бы как честный ответ.
-            log_error "Internal table of reserved ranges is corrupted: '$cidr'."
+            # The table is a constant, so a failure here means broken code, not
+            # user input. A silent "split" would look like an honest answer.
+            log_error "The internal table of non-public ranges is corrupt: '$cidr'."
             return 1
         }
         slo="${b%% *}"; shi="${b##* }"
@@ -276,67 +275,67 @@ _awg_ipv4_range_is_non_public() {
     (( cur > hi ))
 }
 
-# _is_full_tunnel <allowed_ips> : покрывает ли список ВЕСЬ публичный IPv4.
+# _is_full_tunnel <allowed_ips> : does the list cover ALL public IPv4?
 #
-# Режим 1 задаёт полный туннель строкой 0.0.0.0/0, режим 2 (ДЕФОЛТ УСТАНОВКИ) -
-# списком из 34 записей: весь публичный IPv4 минус частные сети. Списком, а не
-# нулём, он записан только чтобы обойти баг iOS на 0.0.0.0/5 (issue #42), по
-# смыслу это тоже полный туннель. Сравнение строки с литералом отвечало на эти
-# два случая по-разному, и дефолтная установка теряла ::/0 - IPv6 устройства
-# уходил наружу со своим настоящим адресом.
+# Mode 1 spells a full tunnel as 0.0.0.0/0; mode 2 (the INSTALL DEFAULT) spells
+# it as a 34-entry list: all public IPv4 minus the private ranges. It is written
+# as a list only to dodge the iOS bug on 0.0.0.0/5 (issue #42), so by meaning it
+# is a full tunnel too. Comparing the string with a literal answered these two
+# cases differently, and the default install lost its ::/0 - the device's IPv6
+# went out with its real address.
 #
-# Настоящая раздельная маршрутизация (режим 3) не покрывает публичное
-# пространство и получает отрицательный ответ, как и раньше.
+# Real split routing (mode 3) does not cover the public space and still gets a
+# negative answer.
 #
-# Возврат: 0 - полный туннель, 1 - нет. Неразобранный маршрут тоже даёт 1, но
-# ГРОМКО: молчаливое 'считаю раздельным' здесь неотличимо от честного ответа.
+# Returns: 0 - full tunnel, 1 - not. An unparseable route also returns 1, but
+# LOUDLY: a silent "assuming split" is indistinguishable from an honest answer.
 _is_full_tunnel() {
     local list="$1" tok b lo hi pairs="" cur=0
     local -a toks=()
-    # read берёт ТОЛЬКО ПЕРВУЮ СТРОКУ, даже когда перевод строки стоит в IFS,
-    # поэтому переводы строк и возвраты каретки превращаю в пробелы заранее.
-    # AllowedIPs бывает многострочным (wg допускает повтор ключа, D#38), а
-    # конфиг, поправленный из Windows, приносит \r в конце последнего токена.
+    # read takes ONLY THE FIRST LINE even with newline in IFS, so newlines and
+    # carriage returns are turned into spaces up front. AllowedIPs can be
+    # multi-line (wg allows the key to repeat, D#38), and a config edited on
+    # Windows arrives with a \r glued to the last token.
     list="${list//$'\r'/}"
     list="${list//$'\n'/, }"
     local IFS=$', \t'
     read -ra toks <<< "$list"
     IFS=$' \t\n'
-    # Верхняя граница на размер списка. Каждый токен стоит одной подстановки
-    # команды, то есть процесса: наши списки короче 40 записей, а вот
-    # пользовательский на десятки тысяч сетей (инверсия страновых диапазонов -
-    # популярный в тредах приём) сделал бы каждый add и regen многоминутным.
-    # Отказ ГРОМКИЙ и с числом: поведение остаётся прежним (::/0 не
-    # дописывается), но причина видна, а не выглядит как «проверил и сошлось».
+    # Upper bound on the list size. Every token costs one command substitution,
+    # that is one process: our own lists are under 40 entries, but a user list
+    # of tens of thousands of networks (inverting country ranges is a popular
+    # trick in forum threads) would turn every add and regen into minutes. The
+    # refusal is LOUD and carries the number: the behaviour stays what it was
+    # (no ::/0 appended), but the reason is visible instead of looking checked.
     if (( ${#toks[@]} > 512 )); then
-        log_warn "AllowedIPs: ${#toks[@]} routes exceed the check limit (512) - treating the list as split tunnel, ::/0 not appended."
+        log_warn "AllowedIPs: ${#toks[@]} routes, above the check limit (512) - treating the list as split, not appending ::/0."
         return 1
     fi
     for tok in "${toks[@]}"; do
         [[ -z "$tok" ]] && continue
-        # IPv6-токен на покрытие IPv4 не влияет: dual-stack список уже содержит
-        # свою IPv6-часть, и она не должна мешать ответу про IPv4.
+        # An IPv6 token does not change IPv4 coverage: a dual-stack list already
+        # carries its IPv6 part and must not disturb the answer about IPv4.
         [[ "$tok" == *:* ]] && continue
         [[ "$tok" == */* ]] || tok="${tok}/32"
         if ! b=$(_cidr_bounds "$tok"); then
-            log_warn "AllowedIPs: route '$tok' could not be parsed - treating the list as split tunnel, ::/0 not appended."
+            log_warn "AllowedIPs: route '$tok' could not be parsed - treating the list as split, not appending ::/0."
             return 1
         fi
         pairs+="${b}"$'\n'
     done
-    # Пустой список (или только IPv6) - не полный туннель.
+    # An empty list (or an IPv6-only one) is not a full tunnel.
     [[ -n "$pairs" ]] || return 1
-    # Проход по объединению интервалов: всё, что осталось непокрытым, обязано
-    # целиком лежать в служебных диапазонах. sort -n даёт возрастающий порядок,
-    # перекрытия и дубликаты схлопываются курсором cur.
-    # Сортировка в переменную, а НЕ подстановкой процесса: отказ sort внутри
-    # <(...) родительской оболочке не виден, и предикат молча отвечал бы
-    # 'раздельный' на исправном списке - то есть на сломанном хосте тихо
-    # вернулось бы поведение до этой правки, включая режим 1, который от sort
-    # раньше не зависел вовсе.
+    # Sweep the union of the intervals: whatever stays uncovered must lie
+    # entirely inside the non-public ranges. sort -n gives ascending order;
+    # overlaps and duplicates collapse into the cursor.
+    # Sort into a variable, NOT through process substitution: a failure of sort
+    # inside <(...) is invisible to the parent shell, so the predicate would
+    # silently answer "split" for a sound list - on a broken host the behaviour
+    # from before this change would quietly return, mode 1 included, which never
+    # depended on sort at all.
     local sorted
     sorted=$(printf '%s' "$pairs" | LC_ALL=C sort -n -k1,1 -k2,2) || {
-        log_warn "AllowedIPs: failed to sort routes - full-tunnel coverage not checked, ::/0 not appended."
+        log_warn "AllowedIPs: could not order the routes - not checking whether the tunnel is full, not appending ::/0."
         return 1
     }
     while read -r lo hi; do
@@ -351,25 +350,27 @@ _is_full_tunnel() {
     return 0
 }
 
-# _append_ipv6_full_tunnel_route <allowed_ips> : печатает список с дописанным
-# ::/0, если это полный туннель и IPv6 в списке ещё нет; иначе список как есть.
+# _append_ipv6_full_tunnel_route <allowed_ips> : prints the list with ::/0
+# appended when it is a full tunnel and carries no IPv6 yet; otherwise prints
+# the list unchanged.
 #
-# Зачем: IPv6 через IPv4-туннель не проходит, поэтому без этой строки он идёт
-# мимо VPN со своим настоящим адресом - заблокированный ресурс с записью AAAA
-# остаётся заблокированным, а выглядит это как 'VPN не работает на мобильном'.
-# ::/0 забирает IPv6 в туннель, где он гасится, и клиент откатывается на IPv4
-# (Happy Eyeballs). Того же требует iOS AmneziaVPN для режима 'весь трафик'.
+# Why: IPv6 does not travel through an IPv4 tunnel, so without this line it goes
+# around the VPN with its real address - a blocked site with an AAAA record stays
+# blocked, and it looks like "the VPN does not work on mobile". ::/0 pulls IPv6
+# into the tunnel where it is dropped, and the client falls back to IPv4 (Happy
+# Eyeballs). iOS AmneziaVPN requires the same for its "all traffic" mode.
 #
-# Идемпотентность обязательна: regen выполняется многократно и в том числе
-# поверх dual-stack клиента, чья IPv6-часть уже сформирована.
+# Idempotence is mandatory: regen runs repeatedly, including over a dual-stack
+# client whose IPv6 part has already been built.
 _append_ipv6_full_tunnel_route() {
     local list="$1"
-    # Решение принимается по нормализованной копии, поэтому и печатать надо её.
-    # Иначе возврат каретки из середины строки уехал бы в клиентский конфиг
-    # вместе с дописанным ::/0, а такой токен клиенты отвергают.
-    # Возврат каретки не значим НИКОГДА и просто удаляется; перевод строки - это
-    # разделитель элементов, поэтому он становится запятой, а не пробелом:
-    # пробел склеил бы два маршрута в один нечитаемый токен.
+    # The decision is taken on a normalised copy, so the normalised copy is what
+    # gets printed. Otherwise a carriage return from the middle of the line would
+    # travel into the client config together with the appended ::/0, and clients
+    # reject such a token.
+    # A carriage return is NEVER meaningful and is simply dropped; a newline is
+    # an element separator, so it becomes a comma rather than a space - a space
+    # would glue two routes into one unreadable token.
     list="${list//$'\r'/}"
     list="${list//$'\n'/, }"
     if [[ "$list" != *:* ]] && _is_full_tunnel "$list"; then
@@ -379,11 +380,11 @@ _append_ipv6_full_tunnel_route() {
     fi
 }
 
-# Определение основного сетевого интерфейса (egress).
-# Цепочка fallback, чтобы не падать на хостах, где зонд к 1.1.1.1 не отдаёт
-# интерфейс: провайдер null-route'ит/блокирует адрес, policy-routing или
-# IPv6-only egress (наблюдалось на Ubuntu 26.04 / Timeweb, issue #166).
-# Ручное переопределение: export AWG_MAIN_NIC=<iface> перед запуском.
+# Detect primary (egress) network interface.
+# Fallback chain so we don't abort on hosts where the 1.1.1.1 probe returns no
+# interface: the provider null-routes/blocks the address, policy-routing, or
+# IPv6-only egress (seen on Ubuntu 26.04 / Timeweb, issue #166).
+# Manual override: export AWG_MAIN_NIC=<iface> before running.
 get_main_nic() {
     # Accept a manual override only if it is an existing, safe ifname: the value
     # ends up in PostUp/PostDown (iptables -o ...), so reject names with shell
@@ -513,7 +514,7 @@ _try_local_ip() {
     return 0
 }
 
-# Note: apt_update_tolerant() is defined inline in install_freedom.sh
+# Note: apt_update_tolerant() is defined inline in install_amneziawg_en.sh
 # (needed in steps 1-2 before this file is downloaded). Not duplicated here.
 
 # ==============================================================================
@@ -521,7 +522,7 @@ _try_local_ip() {
 # ==============================================================================
 
 # Random number [min, max] via /dev/urandom (uint32 support).
-# Mirrors install_freedom.sh:rand_range — needed here for tests and regen.
+# Mirrors install_amneziawg_en.sh:rand_range — needed here for tests and regen.
 rand_range() {
     local min=$1 max=$2
     local range=$((max - min + 1))
@@ -614,40 +615,43 @@ generate_awg_h_ranges() {
 # DKMS / amneziawg kernel module auto-recovery
 # ==============================================================================
 
-# awg_module_version : версия модуля amneziawg (пустая строка, если определить
-# не удалось). Сначала спрашиваем ЗАГРУЖЕННЫЙ модуль, и только потом файл.
+# awg_module_version : version of the amneziawg module (empty string if it
+# cannot be determined). Asks the LOADED module first, the file second.
 #
-# ⚠️ Почему не просто modinfo: modinfo читает метаданные того .ko, который
-# ВЫБРАН на диске по modules.dep, а не того объекта, что работает в ядре.
-# В норме это одно и то же, поэтому расхождение не всплывало. Но если на хосте
-# оказались ДВА дерева с модулем одного имени - закреплённый 2.0 в extra/ и
-# DKMS-3.0 в updates/dkms/ - modinfo назовёт тот, что выиграл по приоритету
-# поиска, а загружен может быть другой (например, прежний, до перезагрузки).
-# Тогда наша же диагностика сообщила бы версию, которой в ядре нет.
-# /sys/module/amneziawg/version отражает именно загруженное и существует в
-# ОБЕИХ линиях: MODULE_VERSION(WIREGUARD_VERSION) объявлен в src/main.c и в
-# закреплённом 2.0-теге, и в 3.0.
-# modinfo остаётся вторым путём - он работает, когда модуль не загружен.
+# ⚠️ Why not just modinfo: modinfo reads the metadata of the .ko that was
+# SELECTED on disk via modules.dep, not of the object running in the kernel.
+# Normally these are the same, which is why the divergence never surfaced. But
+# if a host ends up with TWO trees carrying a module of the same name - the
+# pinned 2.0 in extra/ and DKMS 3.0 in updates/dkms/ - modinfo reports whichever
+# won the search order, while a different one may be loaded (for instance the
+# previous one, before a reboot). Our own diagnostics would then name a version
+# that is not in the kernel.
+# /sys/module/amneziawg/version reflects exactly what is loaded, and it exists
+# in BOTH lines: MODULE_VERSION(WIREGUARD_VERSION) is declared in src/main.c in
+# the pinned 2.0 tag as well as in 3.0.
+# modinfo stays as the second path - it works when the module is not loaded.
 #
-# AWG_MODULE_VERSION_PATH переопределяется только тестами (bats): подменить
-# /sys иначе нельзя, а проверить надо именно приоритет «загруженное важнее файла».
+# AWG_MODULE_VERSION_PATH is overridden by tests (bats) only: /sys cannot be
+# faked otherwise, and the priority "loaded beats file" is exactly what needs
+# verifying.
 awg_module_version() {
     local ver="" sysfile="${AWG_MODULE_VERSION_PATH:-/sys/module/amneziawg/version}"
     if [[ -r "$sysfile" ]]; then
-        # ⚠️ `|| true`, а НЕ `|| ver=""`: на файле без завершающего перевода
-        # строки read возвращает 1, УЖЕ присвоив прочитанное. Сброс в пустую
-        # строку затёр бы верное значение и молча уронил нас на modinfo.
-        # ⚠️ И `2>/dev/null` стоит ДО `<`, а не после: перенаправления
-        # применяются слева направо, поэтому при обратном порядке ошибка
-        # открытия файла успевает уйти в исходный stderr - проверено, сырая
-        # строка `bash: ...` вылезала посреди вывода manage check.
+        # ⚠️ `|| true`, NOT `|| ver=""`: on a file without a trailing newline
+        # read returns 1 having ALREADY assigned what it read. Resetting to an
+        # empty string would wipe a correct value and silently fall to modinfo.
+        # ⚠️ And `2>/dev/null` comes BEFORE `<`, not after: redirections are
+        # applied left to right, so with the opposite order a file-open error
+        # still reaches the original stderr - verified, a raw `bash: ...` line
+        # appeared in the middle of `manage check` output.
         IFS= read -r ver 2>/dev/null < "$sysfile" || true
         ver="${ver//[[:space:]]/}"
-        # 🔴 Файл был читаем - отвечаем тем, что он дал, даже если это пустота,
-        # и на modinfo НЕ уходим. Подмена ответом с диска - ровно то, от чего
-        # эта функция создана уходить: при двух деревьях modinfo назовёт версию,
-        # которой в ядре нет, а diagnose на её основании объявит линию протокола.
-        # Пустая версия честнее неверной: потребители печатают строку без версии.
+        # 🔴 The file was readable, so answer with what it gave, even if that
+        # is empty, and do NOT fall through to modinfo. Substituting the on-disk
+        # answer is exactly what this function exists to avoid: with two trees
+        # modinfo names a version that is not in the kernel, and diagnose would
+        # then declare a protocol line from it. An empty version is more honest
+        # than a wrong one - consumers print the line without a version.
         printf '%s' "$ver"
         return 0
     fi
@@ -655,41 +659,44 @@ awg_module_version() {
     printf '%s' "$ver"
 }
 
-# awg_module_build_id : признак СБОРКИ загруженного модуля, одной строкой.
-# Пустая строка, если ничего опознать не удалось.
+# awg_module_build_id : build identity of the loaded module, on one line.
+# Empty string when nothing could be identified.
 #
-# 🔴 Зачем это отдельно от awg_module_version. Строка версии модуля сборку НЕ
-# различает: замер на стенде 30 aug 2026 дал `3.1.20260812` И для сборки PPA от
-# 14 aug (`4680320`), И для сборки от 28 aug (`3c38e16`) - MODULE_VERSION статичен
-# в исходниках и меняется реже, чем сам код. Различают только srcversion (хеш
-# исходников, который считает сборщик модуля) и версия пакета.
-# Без этого признака диагностический отчёт не отвечает на вопрос «какая у тебя
-# сборка», а именно он нужен, когда расходятся модуль ядра и userspace-клиент.
+# 🔴 Why this is separate from awg_module_version. The module version string
+# does NOT identify the build: a bench measurement on 30 aug 2026 read
+# `3.1.20260812` BOTH from the PPA build of 14 aug (`4680320`) AND from the one
+# of 28 aug (`3c38e16`) - MODULE_VERSION is a static define and changes far less
+# often than the code. Only srcversion (the source hash the module build
+# computes) and the package version tell the builds apart.
+# Without it the diagnostic report cannot answer "which build do you have",
+# which is exactly the question when a kernel module and a userspace client
+# disagree.
 #
-# AWG_MODULE_SRCVERSION_PATH переопределяется только тестами: подменить /sys
-# иначе нельзя, а проверить надо именно чтение загруженного модуля.
+# AWG_MODULE_SRCVERSION_PATH is overridden by tests only: /sys cannot be
+# replaced otherwise, and what has to be verified is the read of the loaded
+# module.
 awg_module_build_id() {
     local src="" pkg="" out=""
     local sysfile="${AWG_MODULE_SRCVERSION_PATH:-/sys/module/amneziawg/srcversion}"
     if [[ -r "$sysfile" ]]; then
-        # `|| true` по той же причине, что и в awg_module_version: на файле без
-        # завершающего перевода строки read возвращает 1, УЖЕ присвоив прочитанное.
+        # `|| true` for the same reason as in awg_module_version: on a file with
+        # no trailing newline read returns 1 having ALREADY assigned the value.
         IFS= read -r src 2>/dev/null < "$sysfile" || true
         src="${src//[[:space:]]/}"
     fi
-    # Только ПЕРВАЯ строка: при нескольких совпадениях склейка дала бы
-    # правдоподобную, но несуществующую версию, а это хуже отказа.
+    # FIRST line only: on several matches concatenation would produce a
+    # plausible but non-existent version, and that is worse than no answer.
     pkg=$(dpkg-query -W -f='${Version}\n' amneziawg-dkms 2>/dev/null | head -n 1 || true)
     pkg="${pkg//[[:space:]]/}"
-    # 🔴 Две части НАЗВАНЫ ПО-РАЗНОМУ намеренно: это разные вещи, и они
-    # расходятся штатно. Пакет можно обновить, а модуль в памяти останется
-    # прежним до перезагрузки или modprobe - ровно это наблюдалось на стенде
-    # 30 aug 2026. Слить их в один «признак сборки» значило бы выдать версию
-    # пакета за версию загруженного кода.
-    [[ -n "$src" ]] && out="srcversion загруженного $src"
+    # 🔴 The two parts are LABELLED DIFFERENTLY on purpose: they are different
+    # things and they diverge routinely. The package can be upgraded while the
+    # module in memory stays the old one until a reboot or modprobe - exactly
+    # what was observed on the bench on 30 aug 2026. Merging them into one
+    # "build id" would pass the package version off as the loaded code.
+    [[ -n "$src" ]] && out="loaded srcversion $src"
     if [[ -n "$pkg" ]]; then
         [[ -n "$out" ]] && out="$out; "
-        out="${out}установлен пакет $pkg"
+        out="${out}installed package $pkg"
     fi
     printf '%s' "$out"
 }
@@ -1161,46 +1168,48 @@ load_awg_params() {
     return 0
 }
 
-# Предупреждение о расхождении awgsetup_cfg.init с живым awg0.conf (issue #196).
+# Warn when awgsetup_cfg.init disagrees with the live awg0.conf (issue #196).
 #
-# После установки awg0.conf - единственный источник параметров обфускации, а
-# init читается для них только на bootstrap первой установки (см. load_awg_params
-# выше). Правка AWG_* в init после установки на клиентов не влияет, и до этой
-# проверки она игнорировалась МОЛЧА: файл назван как конфиг установки, человек
-# правит его и не получает ни намёка, что смотреть надо в другое место.
+# After the install, awg0.conf is the only source of the obfuscation parameters,
+# and the init file is read for them only during the bootstrap of a first
+# install (see load_awg_params above). Editing AWG_* in the init file afterwards
+# has no effect on clients, and until this check it was ignored SILENTLY: the
+# file is named like the installation config, so someone edits it and gets no
+# hint that the answer lives elsewhere.
 #
-# Гейт по времени модификации отсекает ложные срабатывания на штатном пути.
-# Рекомендованный способ тюнинга (правка [Interface] в awg0.conf + regen) тоже
-# разводит эти файлы, но init после установки никто не перезаписывает, поэтому
-# там он остаётся СТАРШЕ live-конфига. Предупреждаем только когда init тронут
-# ПОЗЖЕ awg0.conf - это и есть случай "поправил init, эффекта нет".
+# The modification-time gate removes false positives on the supported path.
+# The recommended way to tune (edit [Interface] in awg0.conf, then regen) also
+# makes the two files disagree, but nothing rewrites the init file after the
+# install, so there it stays OLDER than the live config. We warn only when the
+# init file was touched LATER than awg0.conf, which is the "edited init, nothing
+# happened" case.
 #
-# Проверку намеренно не вешаем на load_awg_params: её зовёт и установщик на
-# шаге 6, где init заведомо свежее ещё не перезаписанного awg0.conf, и
-# предупреждение всплывало бы посреди штатной установки.
+# Deliberately not hooked into load_awg_params: the installer calls that on
+# step 6, where the init file is necessarily newer than an awg0.conf that has
+# not been rewritten yet, and the warning would surface mid-install.
 _AWG_DRIFT_KEYS=(AWG_Jc AWG_Jmin AWG_Jmax AWG_S1 AWG_S2 AWG_S3 AWG_S4 \
                  AWG_H1 AWG_H2 AWG_H3 AWG_H4 AWG_I1 AWG_I2 AWG_I3 AWG_I4 AWG_I5)
 
-# _awg_drift_dump <init|live> <файл>: по строке на ключ в порядке массива выше,
-# поэтому дампы двух источников сравнимы построчно. Читаем в subshell, чтобы не
-# трогать окружение вызывающего - функцию можно звать в любой момент, не рискуя
-# перетереть уже загруженные параметры.
+# _awg_drift_dump <init|live> <file>: one line per key in the order of the array
+# above, so the dumps of the two sources compare line by line. Read in a subshell
+# to leave the caller's environment alone - the function can be called at any
+# point without the risk of clobbering already loaded parameters.
 _awg_drift_dump() {
     local mode="$1" src="$2"
     (
-        # Наследованные значения гасим: иначе ключ, которого в источнике нет,
-        # показался бы равным тому, что уже лежит в окружении. Если погасить
-        # не удалось (переменная readonly в вызывающем окружении), сравнивать
-        # нечего - выходим без маркера.
+        # Clear inherited values: otherwise a key missing from the source would
+        # look equal to whatever is already in the environment. If clearing
+        # fails (the variable is readonly in the calling environment) there is
+        # nothing to compare, so leave without the marker.
         unset "${_AWG_DRIFT_KEYS[@]}" 2>/dev/null || exit 1
         if [[ "$mode" == "init" ]]; then
             safe_load_config "$src" >/dev/null 2>&1 || exit 1
         else
             load_awg_params_from_server_conf "$src" >/dev/null 2>&1 || exit 1
         fi
-        # Маркер успеха первой строкой: mapfile не отдаёт код возврата
-        # процесса-поставщика, поэтому без него отказ парсера не отличить от
-        # набора пустых значений.
+        # Success marker on the first line: mapfile does not expose the exit
+        # status of the producing process, so without it a parser failure is
+        # indistinguishable from a set of empty values.
         printf 'ok\n'
         local k
         for k in "${_AWG_DRIFT_KEYS[@]}"; do
@@ -1213,16 +1222,16 @@ warn_awg_init_drift() {
     local init="${CONFIG_FILE:-}" live="${SERVER_CONF_FILE:-}"
     [[ -n "$init" && -n "$live" ]] || return 0
     [[ -f "$init" && -f "$live" ]] || return 0
-    # init не новее live - значит расхождение, если оно есть, создано правкой
-    # самого awg0.conf, то есть штатным путём. Молчим.
+    # The init file is not newer than the live one, so any disagreement was
+    # created by editing awg0.conf itself, which is the supported path. Stay quiet.
     [[ "$init" -nt "$live" ]] || return 0
 
     local -a ivals lvals
     mapfile -t ivals < <(_awg_drift_dump init "$init")
     mapfile -t lvals < <(_awg_drift_dump live "$live")
-    # Без маркера сравнение недостоверно: разбор одного из источников отказал.
-    # Молчим, а не объявляем разошедшимися все ключи разом - реальную причину
-    # (например неполный [Interface]) дальше назовёт load_awg_params.
+    # Without the marker the comparison is not trustworthy: one of the sources
+    # failed to parse. Stay quiet instead of declaring every key as differing -
+    # load_awg_params will name the real cause (an incomplete [Interface], say).
     [[ "${ivals[0]:-}" == "ok" && "${lvals[0]:-}" == "ok" ]] || return 0
 
     local drift="" i
@@ -1231,8 +1240,8 @@ warn_awg_init_drift() {
     done
     [[ -n "$drift" ]] || return 0
 
-    log_warn "File $init was modified after $live and obfuscation parameters differ: ${drift% }"
-    log_warn "Values from $live are in effect - after install it is the sole source for these parameters. Edits in $init will not reach clients: change [Interface] in $live, then restart awg-quick@awg0 and regen affected clients."
+    log_warn "$init was modified later than $live, and their obfuscation parameters disagree: ${drift% }"
+    log_warn "The values from $live are the ones in effect - after the install it is the only source of these parameters. If you edited them in $init, the edit will not reach clients: change the [Interface] section in $live instead, then restart awg-quick@awg0 and regen the clients you need."
     return 0
 }
 
@@ -1460,7 +1469,7 @@ render_server_config() {
     local postdown="iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o ${nic} -j MASQUERADE"
 
     # MSS/PMTU clamp: pin the TCP MSS to the tunnel MTU so large segments do not
-    # stall against the 1280 tunnel when ICMP "frag needed" is filtered (PMTU
+    # stall against the 1420 tunnel when ICMP "frag needed" is filtered (PMTU
     # blackhole: VPN connects but large pages/downloads hang on mobile/double-NAT/
     # cascade paths). A fixed MSS derived from AWG_MTU is deterministic with the
     # hard-set MTU and auto-syncs with it; clamp-to-pmtu would depend on the egress
@@ -1575,41 +1584,43 @@ EOF
     return 0
 }
 
-# Предупредить, что списочное значение задано несколькими строками и они были
-# объединены. Молчать тут нельзя: объединение меняет то, что человек написал
-# руками, и если он ошибся, узнать об этом он должен от нас, а не от клиента.
+# Warn that a list value was given on several lines and they were joined.
+# Staying silent here is not an option: joining changes what the user typed by
+# hand, and if they made a mistake they should hear it from us, not from the
+# client.
 _awg_warn_multiline() {
     local raw="$1" key="$2" name="$3" n
     n=$(printf '%s\n' "$raw" | grep -c '[^[:space:]]') || n=0
-    (( n > 1 )) && log_warn "Client '${name}' '${key}' was set in ${n} lines - values merged into one."
+    (( n > 1 )) && log_warn "'${key}' of client '${name}' is given on ${n} lines - the values were joined into one."
     return 0
 }
 
-# Нормализация списка через запятую к каноническому виду "a, b, c".
+# Normalise a comma-separated list to the canonical "a, b, c" form.
 #
-# Зачем: установщик пишет AllowedIPs и DNS через запятую С ПРОБЕЛОМ, а
-# regenerate_client читал эти значения через `tr -d '[:space:]'` и записывал
-# прочитанное обратно, поэтому первый же regen оставлял в .conf слипшийся
-# список (D#38 @humowns). Здесь список разбирается поэлементно, а разделитель
-# ставится канонически, и повторный regen ЛЕЧИТ уже испорченные конфиги.
+# Why: the installer writes AllowedIPs and DNS with a space after each comma,
+# while regenerate_client read those values through `tr -d '[:space:]'` and
+# wrote what it had read straight back, so the very first regen left a
+# collapsed list in .conf (D#38 @humowns). Here the list is split per element
+# and the separator is rebuilt canonically, so a repeated regen REPAIRS configs
+# that were already damaged.
 #
-# 🔴 НЕ применять к значению, которое уходит в JSON-массив allowed_ips сборщика
-# vpn:// (см. комментарий у generate_vpn_uri): там нужна КОМПАКТНАЯ форма.
-# Одна редакция этой правки нормализацию туда уже завела, и на стенде это дало
-# ведущий пробел внутри 33 элементов массива из 34.
+# 🔴 Do NOT apply this to the value that feeds the allowed_ips JSON array in the
+# vpn:// builder (see the comment at generate_vpn_uri): that one needs the
+# COMPACT form. One revision of this very fix did normalise it there, and on a
+# test server that put a leading space inside 33 of the 34 array elements.
 #
-# Пробелы срезаются ВНУТРИ элемента, а не только по краям: элементы этих двух
-# списков (CIDR и адреса резолверов) пробелов не содержат никогда, а валидатор
-# `manage modify` чистит их так же, через `${tok//[[:space:]]/}`. Заодно это
-# лечит значения вида "1.1.1. 1", которые прежний `tr` вычищал случайно.
+# Whitespace is stripped INSIDE each element, not only at its edges: elements of
+# these two lists (CIDRs and resolver addresses) never contain spaces, and the
+# `manage modify` validator cleans them the same way, via `${tok//[[:space:]]/}`.
+# That also repairs values like "1.1.1. 1", which the old `tr` cleaned by luck.
 #
-# Разбор через `read -a`, а не `for x in $raw`, чтобы значение не попало под
-# glob-раскрутку. Trim инлайном, без вызова функции: подстановка на КАЖДЫЙ
-# элемент порождает subshell, и на списке в 2000 записей это 18 секунд против
-# 0.1 - а regen без имени идёт по всем клиентам сразу.
+# Split via `read -a` rather than `for x in $raw` so the value is not subject to
+# glob expansion. The trim is inline rather than a function call: a substitution
+# per element forks a subshell, and on a 2000-entry list that is 18 seconds
+# against 0.1 - while regen without a name walks every client at once.
 #
-# ⚠️ Контракт: вход ОДНОСТРОЧНЫЙ. `read` без `-d` возьмёт только первую строку,
-# поэтому многострочное значение вызывающий обязан склеить сам (`paste -sd, -`).
+# ⚠️ Contract: the input is SINGLE-LINE. `read` without `-d` would take only the
+# first line, so a multi-line value must be joined by the caller (`paste -sd, -`).
 awg_normalize_csv() {
     local out="" item
     local -a parts
@@ -1622,9 +1633,9 @@ awg_normalize_csv() {
     printf '%s' "$out"
 }
 
-# Допустимый диапазон MTU для AWG / WireGuard.
-# Минимум 576 (классический минимум IPv4), максимум 9100 (verge на jumbo frame).
-# Значения вне диапазона трактуются как ошибочные и игнорируются (fallback к 1280).
+# Acceptable MTU range for AWG / WireGuard.
+# Lower bound 576 (classic IPv4 minimum), upper bound 9100 (just under jumbo).
+# Values outside the range are treated as invalid and dropped (fallback to 1420).
 _validate_mtu() {
     local v="$1"
     [[ "$v" =~ ^[0-9]+$ ]] || return 1
@@ -1663,8 +1674,8 @@ _extract_mtu_from_server_conf() {
 # length (e.g. fddd:2c4:2c4:2c4::5). If non-empty and ALLOW_IPV6_TUNNEL=1:
 #   - Address = <ipv4>/32, <ipv6>/128
 #   - AllowedIPs (mirror the IPv4 routing mode into IPv6, intent-mirroring):
-#       full tunnel (ALLOWED_IPS=0.0.0.0/0): + ::/0 (native) or + <IPV6_SUBNET> (no-native)
-#       split tunnel (custom ALLOWED_IPS):   IPv4 list UNCHANGED + ONLY <IPV6_SUBNET>,
+#       full tunnel (_is_full_tunnel, modes 1 and 2): + ::/0 (native) or + <IPV6_SUBNET> (no-native)
+#       split tunnel (mode 3):               IPv4 list UNCHANGED + ONLY <IPV6_SUBNET>,
 #         NEVER ::/0 - there is no IPv6 split-list, hijacking all IPv6 breaks split-tunnel.
 # If empty (legacy client): Address = <ipv4>/32, AllowedIPs unchanged.
 render_client_config() {
@@ -1700,31 +1711,31 @@ render_client_config() {
         esac
     else
         allowed_ips="${ALLOWED_IPS:-0.0.0.0/0}"
-        # iOS AmneziaVPN в режиме "весь трафик" требует обе семьи адресов: при
-        # голом 0.0.0.0/0 он считает это незавершённой раздельной маршрутизацией
-        # и не поднимает туннель. Для полного туннеля добавляем ::/0 - IPv6
-        # уходит в туннель (и отсекается, если у сервера нет нативного IPv6),
-        # наружу мимо VPN не утекает. Полный туннель определяется покрытием
-        # маршрутов, поэтому сюда попадают и режим 1, и списочный режим 2
-        # (дефолт установки); раздельная маршрутизация - нет.
-        # Проверка результата подстановки обязательна: старый код был чистым
-        # сравнением строк и отказать не мог, а подстановка команды при отказе
-        # fork/exec вернёт пустую строку. Без проверки в конфиг ушло бы
-        # 'AllowedIPs = ' при коде возврата 0, то есть громкий отказ стал бы
-        # тихой выдачей нерабочего профиля.
+        # iOS AmneziaVPN in "all traffic" mode requires both address families:
+        # with a bare 0.0.0.0/0 it treats the config as incomplete split routing
+        # and refuses to bring the tunnel up. For a full tunnel we add ::/0 -
+        # IPv6 goes into the tunnel (and is dropped if the server has no native
+        # IPv6), so it never leaks past the VPN. A full tunnel is decided by
+        # route coverage, so both mode 1 and the list-shaped mode 2 (the install
+        # default) land here; split routing does not.
+        # Checking the substitution result is mandatory: the old code was a pure
+        # string comparison and could not fail, while a command substitution
+        # returns an empty string when fork/exec fails. Without the check the
+        # config would get 'AllowedIPs = ' with exit code 0 - a loud failure
+        # turned into the quiet delivery of a broken profile.
         local _aip_new
         _aip_new=$(_append_ipv6_full_tunnel_route "$allowed_ips") && [[ -n "$_aip_new" ]] || {
-            log_error "Failed to compute AllowedIPs - client config was not created."
+            log_error "Could not compute AllowedIPs - the client config was not created."
             return 1
         }
         allowed_ips="$_aip_new"
     fi
 
     # MTU resolution order: server awg0.conf > AWG_MTU from awgsetup_cfg.init >
-    # 1420 practical fallback (1280 only if value is invalid). Server config is
-    # the source of truth for a running server - the user could have hand-edited
-    # MTU in /etc/amnezia/amneziawg/awg0.conf and regen has to pick that up.
-    # Out-of-range values (outside 576..9100) at any stage roll back to 1420.
+    # 1420 fallback. Server config is the source of truth for a running server -
+    # the user could have hand-edited MTU in /etc/amnezia/amneziawg/awg0.conf
+    # and regen has to pick that up (Discussion #38). Out-of-range
+    # values (outside 576..9100) at any stage roll back to 1420.
     local mtu
     mtu=$(_extract_mtu_from_server_conf) || mtu=""
     if [[ -z "$mtu" ]]; then
@@ -1772,9 +1783,9 @@ H3 = ${AWG_H3}
 H4 = ${AWG_H4}
 EOF
 
-    # I1-I5: переносим заданные CPS-параметры в клиентский конфиг (issue #71).
-    # Совпадать с серверными не обязаны - приёмник их не валидирует; regen
-    # просто разносит по клиентам то, что задано на сервере.
+    # I1-I5: copy the set CPS params into the client config (issue #71).
+    # They do not have to match the server side - the receiver never validates
+    # them; regen simply distributes whatever the server has.
     [[ -n "${AWG_I1:-}" ]] && echo "I1 = ${AWG_I1}" >> "$tmpfile"
     [[ -n "${AWG_I2:-}" ]] && echo "I2 = ${AWG_I2}" >> "$tmpfile"
     [[ -n "${AWG_I3:-}" ]] && echo "I3 = ${AWG_I3}" >> "$tmpfile"
@@ -1809,18 +1820,18 @@ EOF
 }
 
 # ==============================================================================
-# Операции, перезапускающие интерфейс: предупреждение и обратимость
+# Operations that restart the interface: warning and reversibility
 # ==============================================================================
 
-# awg_ssh_client_addr : адрес источника текущей SSH-сессии (пусто, если это не
-# SSH или определить не удалось).
+# awg_ssh_client_addr : source address of the current SSH session (empty if this
+# is not SSH or it cannot be determined).
 #
-# ⚠️ Одного $SSH_CONNECTION НЕДОСТАТОЧНО: скрипт запускают через sudo, а sudo по
-# умолчанию делает env_reset, и SSH_CONNECTION в env_keep Debian/Ubuntu не
-# входит. Поэтому второй путь - who по нашему собственному tty.
-# who может отдать имя хоста вместо адреса (при UseDNS yes); тогда сверка с
-# подсетью не состоится, и вызывающий получит "определить не удалось" - это
-# честнее, чем угадывать.
+# ⚠️ $SSH_CONNECTION alone is NOT ENOUGH: the script is run through sudo, sudo
+# does env_reset by default, and SSH_CONNECTION is not in the Debian/Ubuntu
+# env_keep list. Hence the second path - who, matched against our own tty.
+# who may report a hostname instead of an address (with UseDNS yes); the subnet
+# comparison then cannot be made, and the caller gets "could not determine",
+# which is more honest than guessing.
 awg_ssh_client_addr() {
     local from_tty="" from_env="" mytty
     mytty=$(ps -o tty= -p $$ 2>/dev/null | tr -d '[:space:]')
@@ -1831,12 +1842,13 @@ awg_ssh_client_addr() {
             }')
     fi
     [[ -n "${SSH_CONNECTION:-}" ]] && from_env="${SSH_CONNECTION%% *}"
-    # ⚠️ Приоритет у данных ПО НАШЕМУ tty, а не у унаследованной переменной.
-    # SSH_CONNECTION приезжает из окружения и в переподключённой сессии
-    # tmux/screen может указывать на ПРЕЖНЕЕ подключение - тогда мы выдали бы
-    # уверенно неверный вердикт. utmp по своему tty описывает текущее.
-    # Но если tty-путь дал не адрес (при UseDNS yes там будет имя хоста),
-    # берём переменную: годный адрес полезнее честного «не знаю».
+    # ⚠️ Data keyed on OUR tty wins over the inherited variable.
+    # SSH_CONNECTION comes from the environment, and in a reattached tmux/screen
+    # session it can point at the PREVIOUS connection - we would then produce a
+    # confidently wrong verdict. utmp keyed on our own tty describes the current
+    # one. But if the tty path yielded something that is not an address (with
+    # UseDNS yes it will be a hostname), take the variable: a usable address
+    # beats an honest "unknown".
     if _valid_ipv4 "$from_tty" 2>/dev/null; then
         printf '%s' "$from_tty"
     elif _valid_ipv4 "$from_env" 2>/dev/null; then
@@ -1848,20 +1860,29 @@ awg_ssh_client_addr() {
     fi
 }
 
-# _awg_tunnel_subnet : подсеть туннеля как addr/prefix, либо пустая строка.
+# awg_session_via_tunnel : is the current session going THROUGH the VPN tunnel.
+#   0 - yes, the source address is inside the tunnel subnet (a restart will cut
+#       off access);
+#   1 - no, the address is outside the subnet;
+#   2 - could not determine (not SSH, address not IPv4, subnet not parsed).
+# Three states rather than two, deliberately: "unknown" and "not through the
+# tunnel" need DIFFERENT wording, and collapsing them into 1 would present a
+# guess as a fact.
+# _awg_tunnel_subnet : the tunnel subnet as addr/prefix, or an empty string.
 #
-# 🔴 ДЕФОЛТА ЗДЕСЬ НЕТ СОЗНАТЕЛЬНО, и это исправление критического дефекта.
-# Прежняя редакция подставляла литерал 10.9.9.1/24, а manage на пути команды
-# restart НЕ загружает awgsetup_cfg.init - значит AWG_TUNNEL_SUBNET там пуст.
-# У любого, кто поставил сервер с --subnet, сессия из его подсети (например
-# 10.66.66.2) сравнивалась с чужой 10.9.9.0/24 и объявлялась "не через туннель":
-# скрипт уверенно утверждал ОБРАТНОЕ ИСТИНЕ ровно в том сценарии, ради которого
-# проверка написана, и не показывал ни предупреждения, ни подсказки про консоль.
-# Подставленный литерал превращает "данных нет" в "данные есть, и они такие".
+# 🔴 THERE IS DELIBERATELY NO DEFAULT HERE, and that fixes a critical defect.
+# An earlier revision substituted the literal 10.9.9.1/24, while manage does NOT
+# load awgsetup_cfg.init on the restart path - so AWG_TUNNEL_SUBNET is empty
+# there. For anyone who installed with --subnet, a session from their own subnet
+# (say 10.66.66.2) was compared against a foreign 10.9.9.0/24 and declared "not
+# through the tunnel": the script confidently asserted THE OPPOSITE OF THE TRUTH
+# in exactly the scenario the check was written for, and showed neither the
+# warning nor the hint about the provider console. A substituted literal turns
+# "there is no data" into "there is data, and it says this".
 #
-# Источники по убыванию достоверности: живой интерфейс, конфиг сервера,
-# переменная (её выставляет load_awg_params на других путях). Ничего не нашли -
-# пусто, и вызывающий обязан сказать "не знаю", а не угадывать.
+# Sources by descending trustworthiness: the live interface, the server config,
+# the variable (which load_awg_params sets on other paths). Nothing found means
+# empty, and the caller must say "unknown" rather than guess.
 _awg_tunnel_subnet() {
     local out=""
     out=$(ip -4 -o addr show awg0 2>/dev/null \
@@ -1883,14 +1904,6 @@ _awg_tunnel_subnet() {
     printf '%s' "$out"
 }
 
-# awg_session_via_tunnel [адрес] : идёт ли текущая сессия ЧЕРЕЗ туннель VPN.
-#   0 - да, адрес источника лежит в подсети туннеля (перезапуск оборвёт доступ);
-#   1 - нет, адрес вне подсети;
-#   2 - определить не удалось (не SSH, адрес не IPv4, подсеть НЕИЗВЕСТНА).
-# Три состояния, а не два, сознательно: "не знаю" и "не через туннель" требуют
-# РАЗНЫХ формулировок, а склеивание их в 1 выдавало бы догадку за факт.
-# Адрес можно передать аргументом, чтобы вызывающий не спрашивал utmp дважды и
-# не получил вердикт по одному адресу с текстом про другой.
 awg_session_via_tunnel() {
     local addr="${1:-}" subnet net_int bcast_int addr_int
     [[ -n "$addr" ]] || addr="$(awg_ssh_client_addr)"
@@ -1898,12 +1911,12 @@ awg_session_via_tunnel() {
     [[ "$addr" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] || return 2
     subnet="$(_awg_tunnel_subnet)"
     [[ -n "$subnet" ]] || return 2
-    # 🔴 Префикс /31 и /32 не несёт диапазона хостов, поэтому по нему нельзя
-    # ответить на наш вопрос: любой адрес кроме серверного окажется "вне
-    # подсети", и мы уверенно сказали бы "доступ не пострадает" человеку,
-    # сидящему в туннеле. Наш генератор пишет /16../30, но путь через живой
-    # интерфейс наследует ЛЮБОЙ префикс, а /32 в [Interface] - обычная
-    # практика WireGuard. Отвечаем "не знаю" (проверено на стенде).
+    # 🔴 A /31 or /32 prefix carries no host range, so it cannot answer our
+    # question: any address other than the server one lands "outside the
+    # subnet", and we would confidently tell someone sitting in the tunnel
+    # that access is unaffected. Our generator writes /16../30, but the live
+    # interface path inherits WHATEVER prefix is there, and /32 in
+    # [Interface] is common WireGuard practice. Answer "unknown" (verified).
     [[ "${subnet##*/}" =~ ^[0-9]+$ ]] || return 2
     (( 10#${subnet##*/} <= 30 )) || return 2
     read -r net_int bcast_int < <(_cidr_bounds "$subnet" 2>/dev/null) || return 2
@@ -1914,99 +1927,101 @@ awg_session_via_tunnel() {
     return 1
 }
 
-# awg_warn_interface_disruption : предупредить ДО операции, перезапускающей
-# интерфейс. Вызывать раньше confirm_action, чтобы предупреждение было видно и
-# при --yes (неинтерактивные запуски тоже отрезают людей от сервера).
+# awg_warn_interface_disruption : warn BEFORE an operation that restarts the
+# interface. Call it before confirm_action so the warning is visible with --yes
+# as well (a non-interactive run can cut people off from the server too).
 awg_warn_interface_disruption() {
     local rc addr subnet
-    log_warn "Interface awg0 will be restarted - all client connections will drop for a few seconds."
-    # Адрес спрашиваем ОДИН раз и передаём в проверку: два независимых вызова
-    # могли дать вердикт по одному адресу и текст про другой (или пустой).
+    log_warn "The awg0 interface will be restarted - every client connection drops for a few seconds."
+    # Ask for the address ONCE and pass it into the check: two independent
+    # calls could give a verdict about one address and text about another.
     addr="$(awg_ssh_client_addr)"
-    # Подсеть тоже резолвим ОДИН раз и ДО вердикта: прежняя редакция
-    # спрашивала её второй раз уже после, и напечатанная подсеть могла
-    # оказаться не той, по которой вердикт вынесен.
+    # The subnet is resolved ONCE and BEFORE the verdict as well: an earlier
+    # revision asked for it a second time afterwards, so the printed subnet
+    # could differ from the one the verdict was based on.
     subnet="$(_awg_tunnel_subnet)"
-    # rc берём формой `|| rc=$?`, а НЕ `cmd; rc=$?`: под set -e вторая форма
-    # прерывает функцию на ненулевом коде, то есть предупреждение оборвалось
-    # бы на середине. В репозитории есть встроенный скрипт с set -euo
-    # pipefail, поэтому это не гипотетический случай.
+    # rc is taken with `|| rc=$?` rather than `cmd; rc=$?`: under set -e the
+    # latter aborts the function on a non-zero status, cutting the warning off
+    # halfway. The repository does contain an embedded script with set -euo
+    # pipefail, so this is not hypothetical.
     rc=0
     awg_session_via_tunnel "$addr" || rc=$?
     case "$rc" in
         0)
-            log_warn "WARNING: you appear to be connected to this server THROUGH this VPN."
-            log_warn "  Your session address $addr is inside tunnel subnet ${subnet},"
-            log_warn "  so the current connection will drop after restart."
-            log_warn "  If access does not return on its own, use the provider console or VNC panel"
-            log_warn "  - it works outside the VPN."
+            log_warn "WARNING: it looks like you are connected to this server THROUGH this very VPN."
+            log_warn "  Your session address $addr belongs to the tunnel subnet ${subnet},"
+            log_warn "  so the current connection will drop after the restart."
+            log_warn "  If access does not come back on its own, use the console or VNC in your"
+            log_warn "  provider's panel: it works independently of the VPN."
             ;;
         1)
-            log_debug "Session is not via the tunnel (address $addr) - server access will not be affected."
+            log_debug "Session is not going through the tunnel (address $addr) - server access is unaffected."
             ;;
         *)
             log_warn "  If you are connected to this server THROUGH this VPN, you will lose access."
-            log_warn "  Fallback: provider console or VNC panel."
+            log_warn "  The fallback for that case is the console or VNC in your provider's panel."
             ;;
     esac
 }
 
-# awg_cps_decoded_size <строка I> [...] : суммарный ДЕКОДИРОВАННЫЙ размер в байтах.
+# awg_cps_decoded_size <I string> [...] : total DECODED size in bytes.
 #
-# Зачем. Параметры I1-I5 попадают в атрибуты устройства, которые ядро отдаёт
-# одним netlink-сообщением дампа. Когда атрибуты устройства занимают почти весь
-# буфер, первый пир в него уже не помещается, и `wg_get_device_dump` не
-# продвигается и не падает: он возвращает ненулевую длину, netlink спрашивает
-# снова, и то же сообщение выдаётся бесконечно. Читатель крутится и растёт в
-# памяти; на роутере этого достаточно, чтобы уронить устройство. Разбор с кодом:
-# amneziawg-linux-kernel-module#228 (31 aug 2026), симптом у пользователя - #148.
-# Полоса чуть выше зацикливания отвечает `Unable to access interface: Message
-# too long`, и это ЛУЧШЕ: ошибка хотя бы останавливает. Формулировка ровно
-# такая: errno EMSGSIZE, glibc печатает «too long», и грепать свой лог надо по
-# этим словам.
+# Why. The I1-I5 parameters land in the device attributes that the kernel emits
+# as a single netlink dump message. Once the device attributes fill most of the
+# buffer, the first peer no longer fits, and `wg_get_device_dump` neither
+# advances nor fails: it returns a non-zero length, netlink asks again, and the
+# same message is produced forever. The reader spins and grows; on a router that
+# is enough to take the box down. Written up with the code path in
+# amneziawg-linux-kernel-module#228 (31 aug 2026); the user-visible symptom is
+# #148. The band just above the looping one answers `Unable to access interface:
+# Message too long`, which is BETTER: an error at least stops. Those are the
+# exact words: errno EMSGSIZE, which glibc renders as "too long", so that is
+# what to grep a log for.
 #
-# 🔴 Считается ДЕКОДИРОВАННЫЙ размер, а не длина строки. `<r 1000>` - восемь
-# символов и тысяча байт на проводе; сравнение по длине строки не заметило бы
-# ровно того случая, ради которого проверка написана.
+# 🔴 The DECODED size is counted, not the string length. `<r 1000>` is eight
+# characters and a thousand bytes on the wire; comparing string lengths would
+# miss exactly the case this check exists for.
 #
-# Набор тегов - пересечение двух реализаций, оно же документированный вендором
-# набор: `<b 0xHEX>` литеральные байты, `<r N>` случайные байты, `<rc N>`
-# случайные буквы, `<rd N>` случайные цифры, `<t>` метка времени (4 байта).
-# `<c>` считаем теми же 4 байтами: он есть в модуле ядра и отсутствует в
-# amneziawg-go, то есть влияет на переносимость, но не на размер.
-# Неизвестное не додумывается: выдуманное число хуже честного отказа. Но и
-# молчать о нём нельзя, поэтому всё неразобранное - неизвестный тег, оборванная
-# скобка, мусор между тегами, неправдоподобно большое число - метит результат
-# кодом возврата 2 «сумма занижена». Ноль с кодом 0 обязан означать «разобрал
-# всё, размера нет», иначе вызывающий примет мусор за пустоту.
+# The tag set is the intersection of both implementations, which is also the set
+# the vendor documents: `<b 0xHEX>` literal bytes, `<r N>` random bytes,
+# `<rc N>` random letters, `<rd N>` random digits, `<t>` a timestamp (4 bytes).
+# `<c>` counts as the same 4 bytes: it exists in the kernel module and not in
+# amneziawg-go, so it affects portability rather than size.
+# Nothing unknown is guessed at: an invented number is worse than an honest
+# refusal. But it must not pass in silence either, so anything left unparsed -
+# an unknown tag, an unterminated bracket, junk between tags, an implausibly
+# large count - marks the result with exit code 2, "the sum is an under-count".
+# A zero with code 0 must mean "parsed everything, there is no size", otherwise
+# the caller reads junk as emptiness.
 awg_cps_decoded_size() {
     local total=0 s tag n hex mat pre unknown=0
     for s in "$@"; do
         [[ -n "$s" ]] || continue
-        # Форму без пробела принимаем НАРОЧНО, хотя обе реализации её
-        # отвергают: ядро режет тег по пробелу (`strsep`), amneziawg-go - через
-        # `strings.Fields`, поэтому `<r64>` для них неизвестный ключ и
-        # интерфейс не поднимется. Считать её всё равно правильно: мы оцениваем
-        # размер, и завышенная оценка приводит к предупреждению, а пропуск - к
-        # зависанию. ⚠️ В конфиг такую форму писать нельзя.
+        # The space-less form is accepted DELIBERATELY, even though both
+        # implementations reject it: the kernel splits a tag on the space
+        # (`strsep`) and amneziawg-go uses `strings.Fields`, so `<r64>` is an
+        # unknown key to them and the interface will not come up. Counting it
+        # is still right: this estimates a size, and an over-estimate leads to
+        # a warning while a miss leads to a hang. ⚠️ Do not write this form
+        # into a config.
         while [[ "$s" =~ \<[[:space:]]*([a-zA-Z]+)[[:space:]]*([^\>]*)\> ]]; do
-            # 🔴 Совпадение сохраняем ДО case: внутри ветки `b` стоит свой
-            # `[[ =~ ]]`, и он затирает BASH_REMATCH. Пока продвижение по
-            # строке шло по первому `>`, это ничего не ломало; теперь строка
-            # режется по совпадению, и взятое после case было бы hex-ом.
+            # 🔴 Save the match BEFORE the case: the `b` branch runs its own
+            # `[[ =~ ]]`, which overwrites BASH_REMATCH. That was harmless
+            # while the string advanced to the first `>`; now that it advances
+            # by the match, a value read after the case would be the hex.
             mat="${BASH_REMATCH[0]}"
             tag="${BASH_REMATCH[1]}"
             n="${BASH_REMATCH[2]}"
             n="${n//[[:space:]]/}"
-            # Всё, что стоит ПЕРЕД тегом, тегом не является. Без этой строки
-            # `<><r 5>` проходил как честные пять байт.
+            # Whatever sits BEFORE the tag is not a tag. Without this line
+            # `<><r 5>` passed as an honest five bytes.
             pre="${s%%"$mat"*}"
             [[ -z "${pre//[[:space:]]/}" ]] || unknown=1
             case "${tag,,}" in
                 b)
                     hex="${n#0x}"; hex="${hex#0X}"
-                    # Два hex-символа - один байт. Нечётный хвост не считаем:
-                    # такой тег реализации отвергают, додумывать за них нечего.
+                    # Two hex characters make a byte. An odd tail is not
+                    # counted: implementations reject such a tag anyway.
                     if [[ "$hex" =~ ^[0-9a-fA-F]+$ && $(( ${#hex} % 2 )) -eq 0 ]]; then
                         total=$(( total + ${#hex} / 2 ))
                     else
@@ -2014,17 +2029,17 @@ awg_cps_decoded_size() {
                     fi
                     ;;
                 r|rc|rd)
-                    # 🔴 `10#` обязателен. Без него bash читает число с ведущим
-                    # нулём как восьмеричное, `<r 08>` роняет арифметику, вся
-                    # функция возвращает ПУСТОТУ, и проверка на превышение
-                    # порога молча не срабатывает - тихий отказ ровно там, где
-                    # он опаснее всего. Замерено 31 aug 2026.
-                    # Длина ограничена девятью цифрами не из вкуса:
-                    # `<r 18446744073709551617>` переполняет 64-битную
-                    # арифметику bash и даёт в сумме ЕДИНИЦУ, то есть заведомо
-                    # опасное значение проскакивает под порогом. Замерено
-                    # 1 sep 2026. Вендор ограничивает r/rc/rd тысячей, так что
-                    # девять цифр - запас, а не рамка.
+                    # 🔴 `10#` is mandatory. Without it bash reads a
+                    # leading-zero number as octal, `<r 08>` breaks the
+                    # arithmetic, the whole function returns EMPTY, and the
+                    # threshold check silently never fires - a silent failure
+                    # exactly where it hurts most. Measured 31 aug 2026.
+                    # The nine-digit limit is not a matter of taste:
+                    # `<r 18446744073709551617>` overflows 64-bit bash
+                    # arithmetic and sums to ONE, so a plainly dangerous value
+                    # slips under the threshold. Measured 1 sep 2026. The
+                    # vendor caps r/rc/rd at a thousand, so nine digits is
+                    # headroom rather than a constraint.
                     if [[ "$n" =~ ^[0-9]{1,9}$ ]]; then
                         total=$(( total + 10#$n ))
                     else
@@ -2032,12 +2047,12 @@ awg_cps_decoded_size() {
                     fi
                     ;;
                 t|c)
-                    # 🔴 У `<t>` и `<c>` полезной нагрузки нет, поэтому непустое
-                    # содержимое означает, что мы разобрали НЕ ТО. `<t <r 4096>`
-                    # ловится этой регуляркой как один тег со значением
-                    # `<r 4096`, и без проверки давал четыре байта с кодом
-                    # успеха: четыре тысячи байт превращались в четыре, а
-                    # диагностика шла в опасный вызов с чистой совестью.
+                    # 🔴 `<t>` and `<c>` carry no payload, so non-empty content
+                    # means we parsed the WRONG thing. `<t <r 4096>` matches
+                    # this regex as a single tag whose value is `<r 4096`, and
+                    # without the check it counted four bytes and returned
+                    # success: four thousand bytes became four, and diagnostics
+                    # walked into the dangerous call with a clear conscience.
                     if [[ -z "$n" ]]; then
                         total=$(( total + 4 ))
                     else
@@ -2048,34 +2063,35 @@ awg_cps_decoded_size() {
                     unknown=1
                     ;;
             esac
-            # 🔴 Продвигаемся за КОНЕЦ СОВПАДЕНИЯ. Форма `${s#*>}` резала до
-            # первого `>` в строке, а он мог стоять ДО совпадения - тогда тот
-            # же тег считался второй раз.
+            # 🔴 Advance past the END OF THE MATCH. The `${s#*>}` form cut
+            # to the first `>` in the string, which could sit BEFORE the
+            # match - and then the same tag was counted twice.
             s="${s#*"$mat"}"
         done
-        # Непустой остаток тегом не является. Без этого `garbage` и оборванный
-        # `<r 5` возвращали ноль с кодом 0, то есть «разобрал, размера нет».
+        # A non-empty remainder is not a tag. Without this, `garbage` and an
+        # unterminated `<r 5` returned zero with code 0, that is "parsed, no
+        # size".
         [[ -z "${s//[[:space:]]/}" ]] || unknown=1
     done
     printf '%s' "$total"
-    # Код 2 значит «сумма занижена, встретилось неразобранное». Вызывающий
-    # обязан сказать об этом вслух: занижение здесь неотличимо от измеренного
-    # маленького размера, а это и есть ложное «проверил и сошлось».
+    # A code of 2 means "the sum is an under-count, something was not parsed".
+    # The caller must say so out loud: an under-count is indistinguishable from
+    # a genuinely small size, and that is precisely a false "checked, fine".
     [[ "$unknown" -eq 0 ]] || return 2
     return 0
 }
 
-# _awg_device_param_names : имена device-параметров AWG (2.0 и 3.0), которые
-# живут в секции [Interface] и которые syncconf НЕ снимает.
+# _awg_device_param_names : names of the AWG device parameters (2.0 and 3.0)
+# that live in the [Interface] section and that syncconf does NOT clear.
 _awg_device_param_names() {
     printf '%s\n' Jc Jmin Jmax S1 S2 S3 S4 H1 H2 H3 H4 I1 I2 I3 I4 I5 \
         ContentPaddingAddition HeaderProtectionKey MaxHandshakeAttempts \
         KeepaliveTimeout RejectAfterTime RekeyAfterTime RekeyTimeout
 }
 
-# _awg_device_params_fingerprint [конфиг] : отсортированный список ИМЁН
-# device-параметров, присутствующих в секции [Interface]. Одной строкой.
-# Только имена: значения syncconf применяет корректно, проблема ровно в снятии.
+# _awg_device_params_fingerprint [config] : sorted list of device parameter
+# NAMES present in the [Interface] section, on a single line.
+# Names only: syncconf applies values correctly, the problem is exactly removal.
 _awg_device_params_fingerprint() {
     local conf="${1:-$SERVER_CONF_FILE}" known
     [[ -r "$conf" ]] || return 1
@@ -2094,49 +2110,41 @@ _awg_device_params_fingerprint() {
     ' "$conf" | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//'
 }
 
-# _awg_save_device_params <файл состояния> <отпечаток> : запомнить применённый
-# набор. Файл в AWG_DIR (root-only), потеря = мягкая деградация: следующая
-# проверка просто не сработает, лишнего перезапуска не будет.
-# Запись АТОМАРНАЯ (temp + mv): оборванная запись оставила бы полупустой
-# снимок, а он читается как «параметры убрали» и порождает ложное
-# предупреждение. Отказ не глушим совсем - пишем в debug, иначе тихая потеря
-# состояния выглядела бы как успех.
-# Имя temp-файла ФИКСИРОВАННОЕ, а не с $$: если процесс убьют между записью и
-# mv, следующий запуск перезапишет тот же файл, а не оставит россыпь сирот.
-# Гонки нет - весь участок держит flock apply_config.
-# ⚠️ Отказ записи идёт в log_warn, а НЕ в log_debug. log_debug печатает только
-# при --verbose и в лог-файл при этом не попадает вовсе, то есть прежняя
-# редакция обещала «не глушим совсем», а по факту глушила полностью. Причины
-# отказа под root (ENOSPC, remount read-only, пропавший AWG_DIR) не мягкие: в
-# этот момент под угрозой и awg0.conf, и бэкапы, и лог. return 0 оставлен -
-# применение конфигурации не должно падать из-за диагностического снимка.
+# _awg_save_device_params <state file> <fingerprint> : remember the applied set.
+# The file lives in AWG_DIR (root-only); losing it degrades gracefully - the
+# next check simply does not fire, and no spurious restart happens.
+# The write is ATOMIC (temp + mv): a truncated write would leave a half-empty
+# snapshot, which reads as "the parameters were removed" and produces a false
+# warning. A failure is not swallowed entirely - it goes to debug, otherwise a
+# silent loss of state would look like success.
 _awg_save_device_params() {
     local state="$1" fp="$2" tmp="${1}.tmp"
     if ! printf '%s\n' "$fp" > "$tmp" 2>/dev/null; then
         rm -f "$tmp" 2>/dev/null
-        log_warn "Failed to write interface parameter snapshot ($state) - check disk space and permissions."
+        log_warn "Failed to write the interface parameter snapshot ($state) - check free space and permissions."
         return 0
     fi
     chmod 600 "$tmp" 2>/dev/null || true
     if ! mv -f "$tmp" "$state" 2>/dev/null; then
         rm -f "$tmp" 2>/dev/null
-        log_warn "Failed to replace interface parameter snapshot ($state) - check disk space and permissions."
+        log_warn "Failed to replace the interface parameter snapshot ($state) - check free space and permissions."
     fi
     return 0
 }
 
-# awg_record_device_params : запомнить, какой набор device-параметров стоит в
-# конфиге СЕЙЧАС. Вызывать ПОСЛЕ успешного применения или пересоздания
-# интерфейса - снимок обязан означать «то, что реально стоит на живом
-# интерфейсе», иначе обнаружение снятия начинает врать в обе стороны.
+# awg_record_device_params : remember which set of device parameters the config
+# holds RIGHT NOW. Call it AFTER a successful apply or interface recreation - the
+# snapshot has to mean "what is actually on the live interface", otherwise
+# removal detection starts lying in both directions.
 #
-# 🔴 Два правила, каждое из которых закрывает найденный ревью дефект:
-# 1. Отпечаток считается ЗАНОВО, а не берётся посчитанный до применения: если в
-#    тот момент файл перезаписывался, посчитанное было неполным, и сохранение
-#    его закрепило бы неверный набор.
-# 2. ПУСТОЙ набор не пишем НИКОГДА. Пустой снимок отключает проверку навсегда
-#    (сравнивать не с чем), а пустота почти всегда означает недочитанный файл:
-#    наш генератор всегда пишет Jc/S/H. Лучше сохранить прежний хороший снимок.
+# 🔴 Two rules, each closing a defect found in review:
+# 1. The fingerprint is recomputed rather than reusing the one taken before the
+#    apply: if the file was being rewritten at that moment, what was computed was
+#    incomplete, and saving it would have frozen a wrong set.
+# 2. An EMPTY set is NEVER written. An empty snapshot disables the check forever
+#    (nothing to compare against), and emptiness almost always means a partially
+#    read file: our generator always writes Jc/S/H. Keeping the previous good
+#    snapshot is better.
 awg_record_device_params() {
     local state="${AWG_DIR}/.awg_device_params" fp
     [[ -r "$SERVER_CONF_FILE" ]] || return 0
@@ -2146,7 +2154,7 @@ awg_record_device_params() {
 }
 
 # ==============================================================================
-# Применение конфигурации (syncconf)
+# Config application (syncconf)
 # ==============================================================================
 
 # Apply configuration changes
@@ -2172,34 +2180,35 @@ apply_config() {
 
     local rc=0
 
-    # 🔴 syncconf НЕ СНИМАЕТ device-параметры AWG. Проверено на модуле
-    # 3.0.20260731-04: поставленные Jc/S4/H1/I1/ContentPaddingAddition/
-    # RekeyAfterTime остались на живом интерфейсе после применения конфига, где
-    # их нет. Семантика WireGuard («setconf = полная картина») для AWG-параметров
-    # не действует, она аддитивна. Значит операция «убрать параметр из awg0.conf
-    # и применить» тихо не сработала бы: файл изменился, интерфейс нет, и такое
-    # расхождение ничем не ловится. Снять параметр можно только пересозданием
-    # интерфейса, то есть перезапуском сервиса.
+    # 🔴 syncconf DOES NOT CLEAR AWG device parameters. Verified on module
+    # 3.0.20260731-04: Jc/S4/H1/I1/ContentPaddingAddition/RekeyAfterTime that had
+    # been set stayed on the live interface after applying a config without them.
+    # The WireGuard semantics ("setconf = the complete picture") does not hold for
+    # AWG parameters, it is additive. So the operation "remove a parameter from
+    # awg0.conf and apply" would silently not work: the file changes, the
+    # interface does not, and nothing catches that divergence. A parameter can
+    # only be cleared by recreating the interface, i.e. by restarting the service.
     #
-    # Сравниваем НАБОР ИМЁН параметров с тем, что применяли в прошлый раз, а не
-    # с живым интерфейсом: `awg showconf` печатает и нейтральные значения
-    # (S4 = 0, H1 = 1), поэтому сверка с ним давала бы ложные срабатывания на
-    # каждом применении. Значения не сравниваем вовсе - их syncconf применяет
-    # корректно, проблема ровно в снятии.
-    # Состояния нет (первая установка, потерянный файл) - молчим: сравнивать не
-    # с чем, а предупреждать наугад хуже, чем не предупреждать.
+    # We compare the SET OF NAMES against what was applied last time, not against
+    # the live interface: `awg showconf` prints neutral values too (S4 = 0,
+    # H1 = 1), so comparing with it would produce false positives on every apply.
+    # Values are not compared at all - syncconf applies those correctly, the
+    # problem is exactly removal.
+    # No state (first install, lost file) - stay quiet: there is nothing to
+    # compare against, and guessing at a warning is worse than not warning.
     local params_state="${AWG_DIR}/.awg_device_params"
     local now_fp="" prev_fp="" removed=""
     if [[ -r "$SERVER_CONF_FILE" ]]; then
-        # Путь передаём явно, хотя он же и по умолчанию: иначе shellcheck 0.9
-        # (та версия, что стоит в CI) справедливо ругается SC2120 на параметр,
-        # который никто никогда не передаёт.
+        # The path is passed explicitly even though it is also the default:
+        # otherwise shellcheck 0.9 (the version CI installs) rightly raises
+        # SC2120 about a parameter nobody ever passes.
         now_fp="$(_awg_device_params_fingerprint "$SERVER_CONF_FILE" 2>/dev/null)" || now_fp=""
         [[ -r "$params_state" ]] && IFS= read -r prev_fp 2>/dev/null < "$params_state"
-        # ⚠️ Пустой набор при непустом прежнем НЕ считаем удалением всего.
-        # Наш генератор всегда пишет Jc/S/H, поэтому пустота означает скорее
-        # недочитанный или переписываемый в этот момент файл, чем реальную
-        # чистку. Молчим: ложная тревога тут дороже пропущенной.
+        # ⚠️ An empty set against a non-empty previous one is NOT treated as
+        # "everything was removed". Our generator always writes Jc/S/H, so
+        # emptiness means a partially read or currently rewritten file rather
+        # than a real cleanup. Stay quiet: a false alarm costs more here than a
+        # missed one.
         if [[ -n "$prev_fp" && -n "$now_fp" ]]; then
             local _p
             for _p in $prev_fp; do
@@ -2209,8 +2218,8 @@ apply_config() {
     fi
 
     if [[ "${AWG_APPLY_MODE:-syncconf}" == "restart" ]]; then
-        # Явный restart-режим рвёт соединения клиентов, в том числе SSH через
-        # туннель, поэтому предупреждаем так же, как при manage restart.
+        # An explicit restart mode drops client connections, SSH through the
+        # tunnel included, so warn exactly as manage restart does.
         awg_warn_interface_disruption
         log "Restarting service (apply-mode=restart)..."
         systemctl restart awg-quick@awg0 2>/dev/null; rc=$?
@@ -2223,36 +2232,36 @@ apply_config() {
         return $rc
     fi
 
-    # 🔴 Обнаруженное снятие параметра НЕ перезапускаем сами - предупреждаем.
-    # Первая редакция этой правки перезапускала сервис автоматически, и это было
-    # ХУЖЕ той ловушки, которую закрывало: перезапуск рвёт соединения ВСЕХ
-    # клиентов, а состояние может отстать без всякой вины пользователя. Пример:
-    # человек убрал строку и применил её через `manage restart` - интерфейс уже
-    # пересоздан, параметр уже снят, но снимок набора остался прежним, и
-    # следующий обычный `add` увидел бы "удаление" второй раз и оборвал всех
-    # заново. Цена ложного предупреждения - строка в журнале; цена ложного
-    # перезапуска - обрыв у всех. Поэтому говорим, а решает человек.
-    # ⚠️ Снимок здесь НЕ обновляем. Он обновляется только ПОСЛЕ успешного
-    # применения, ниже. Прежняя редакция обновляла его сразу, и это гасило
-    # предупреждение навсегда, если применение потом падало: состояние уже
-    # «догнало» файл, а на живом интерфейсе не изменилось ничего.
+    # 🔴 A detected removal is NOT restarted for you - it is reported.
+    # The first revision of this change restarted the service automatically, and
+    # that was WORSE than the trap it closed: a restart drops EVERY client
+    # connection, and the state can fall behind through no fault of the user.
+    # Example: someone drops the line and applies it with `manage restart` - the
+    # interface is already recreated and the parameter already cleared, but the
+    # snapshot still holds the old set, so the next ordinary `add` would see the
+    # "removal" a second time and cut everyone off again. A false warning costs
+    # a log line; a false restart costs everyone's connection. So we speak, and
+    # the human decides.
+    # ⚠️ The snapshot is NOT updated here. It is updated only AFTER a successful
+    # apply, below. An earlier revision updated it right away, and that silenced
+    # the warning forever whenever the apply then failed: the state had already
+    # "caught up" with the file while nothing had changed on the live interface.
     if [[ -n "$removed" ]]; then
-        log_warn "Removed from [Interface]: ${removed}."
-        log_warn "  syncconf does NOT remove such parameters - they remain on the live interface."
-        log_warn "  To apply removal, recreate the interface:"
+        log_warn "Removed from the [Interface] section: ${removed}."
+        log_warn "  syncconf does NOT clear such parameters - they stay on the live interface."
+        log_warn "  To make the removal take effect the interface has to be recreated:"
         log_warn "    systemctl restart awg-quick@awg0"
-        log_warn "  This will drop all client connections for a few seconds, so"
-        log_warn "  we do not do this automatically. If you already restarted manually,"
-        log_warn "  you may ignore this warning: after a successful apply the snapshot"
-        log_warn "  will update and this message will not appear on the next run."
+        log_warn "  That drops every client connection for a few seconds, which is why we do"
+        log_warn "  not do it for you. If you have already restarted the service by hand, this"
+        log_warn "  warning can be ignored: after a successful apply the snapshot is"
+        log_warn "  refreshed and this line will not appear on later runs."
     fi
 
     local strip_out
     strip_out=$(timeout 10 awg-quick strip awg0 2>/dev/null) || {
         log_warn "awg-quick strip failed or timed out, falling back to full restart."
-        # Этот перезапуск НЕ ожидаем: человек запускал рутинный add/remove.
-        # Он рвёт всех клиентов, поэтому предупреждаем и здесь, а не только в
-        # явном restart-режиме.
+        # This restart is NOT expected: the person ran a routine add/remove.
+        # It drops every client, so warn here too, not only in explicit mode.
         awg_warn_interface_disruption
         systemctl restart awg-quick@awg0 2>/dev/null; rc=$?
         if [[ $rc -ne 0 ]]; then
@@ -2265,8 +2274,8 @@ apply_config() {
     }
     echo "$strip_out" | timeout 10 awg syncconf awg0 /dev/stdin 2>/dev/null || {
         log_warn "awg syncconf failed or timed out, falling back to full restart."
-        # Как и выше: незапланированный перезапуск оборвёт всех, включая
-        # SSH-сессию через туннель, - об этом надо сказать до, а не после.
+        # As above: an unplanned restart cuts off everyone, including an SSH
+        # session through the tunnel - that has to be said before, not after.
         awg_warn_interface_disruption
         systemctl restart awg-quick@awg0 2>/dev/null; rc=$?
         if [[ $rc -ne 0 ]]; then
@@ -2668,18 +2677,18 @@ generate_vpn_uri() {
         # IPv4/hostname: addr:port
         endpoint="${raw_endpoint%:*}"
     fi
-    # tr -d ' \r' - стирает пробелы И CR (на CRLF-конфигах '.+' жадно
-    # затягивает \r в значение, что ломает JSON.allowed_ips).
+    # tr -d ' \r' - strips spaces AND CR (on CRLF configs '.+' greedily
+    # captures \r into the value, which breaks JSON.allowed_ips).
     #
-    # v5.27.1: НЕ трогать. Значение уходит в JSON-массив allowed_ips через
-    # split(/,/), поэтому пробелы тут вредны - они уехали бы внутрь элементов
-    # массива. Пробелы в клиентском .conf этот путь не портит: встроенный
-    # конфиг вкладывается из файла как есть.
+    # v5.27.1: do NOT touch. The value goes into the allowed_ips JSON array via
+    # split(/,/), so spaces here are harmful - they would end up inside the
+    # array elements. This path does not damage the spaces in the client
+    # .conf: the embedded config is inlined from the file as it is.
     allowed_ips=$(grep -oP 'AllowedIPs\s*=\s*\K.+' "$conf_file" | paste -sd, - | tr -d ' \r')
-    # Проверяем ПУСТОТУ, а не код возврата: `||` тут не срабатывал даже на
-    # строке "AllowedIPs = " без значения, потому что grep находил пробел и
-    # выходил с нулём, а конвейер с paste делает статус тем более бесполезным.
-    [[ -n "$allowed_ips" ]] || { log_warn "AllowedIPs not read from '$conf_file' - full tunnel will be used in the link."; allowed_ips="0.0.0.0/0"; }
+    # Test for EMPTINESS, not for the exit status: the `||` did not fire even
+    # on a valueless "AllowedIPs = " line, because grep matched the space and
+    # exited zero, and a pipeline with paste makes the status useless anyway.
+    [[ -n "$allowed_ips" ]] || { log_warn "AllowedIPs could not be read from '$conf_file' - the link will carry a full tunnel."; allowed_ips="0.0.0.0/0"; }
 
     # MTU/PersistentKeepalive/DNS from .conf - these can be changed via manage modify.
     # On vpn:// import the Amnezia client uses the structured inner-JSON fields
@@ -3178,14 +3187,14 @@ regenerate_client() {
     if [[ -f "$AWG_DIR/${name}.conf" ]]; then
         _had_conf=1
         local _v _raw
-        # tr -d '[:space:]' стирал здесь пробелы после запятых, и regen писал
-        # в .conf слипшийся список (D#38). Нормализуем, а не выкусываем.
+        # tr -d '[:space:]' stripped the spaces after commas here, so regen
+        # wrote the collapsed list into .conf (D#38). Normalise, do not strip.
         #
-        # Строки СКЛЕИВАЮТСЯ, а не берётся первая: wg допускает повтор DNS и
-        # AllowedIPs, значения при этом складываются. Прежний `tr` слеплял их в
-        # заведомо невалидный CIDR, и awg-quick отказывался поднимать интерфейс
-        # ГРОМКО; взять первую строку означало бы отдать пользователю валидный
-        # конфиг, из которого часть сетей исчезла молча.
+        # The lines are JOINED rather than taking the first one: wg allows DNS
+        # and AllowedIPs to repeat, and the values add up. The old `tr` glued
+        # them into a plainly invalid CIDR and awg-quick refused to bring the
+        # interface up LOUDLY; taking the first line would instead hand the user
+        # a valid config with part of the networks silently gone.
         _raw=$(sed -n 's/^DNS[ \t]*=[ \t]*//p' "$AWG_DIR/${name}.conf")
         _awg_warn_multiline "$_raw" "DNS" "$name"
         _v=$(awg_normalize_csv "$(printf '%s' "$_raw" | paste -sd, -)")
@@ -3249,41 +3258,42 @@ regenerate_client() {
         return 1
     }
 
-    # При regen подтягиваем новые дефолты для НЕ-кастомизированных клиентов:
-    # полный туннель получает ::/0 (нужно iOS AmneziaVPN и закрывает утечку
-    # IPv6), одиночный DNS 1.1.1.1 становится парой с резервом. Раздельная
-    # маршрутизация, заданная пользователем через modify, полным туннелем не
-    # является и сохраняется как есть.
-    # Развилка живёт и здесь намеренно: без неё перевыпуск профиля не доставлял
-    # бы исправление уже выданным клиентам, и совет 'обновите профиль' не лечил
-    # бы утечку.
-    # Всё это имеет смысл ТОЛЬКО когда сохранённые настройки будут
-    # восстанавливаться. При --reset-routes и на пути восстановления
-    # (конфига не было) значение ниже не используется вовсе, а отказ по нему
-    # уронил бы уже удавшийся перевыпуск.
+    # On regen, pull in the new defaults for non-customized clients: a full
+    # tunnel gets ::/0 (needed by iOS AmneziaVPN, and it closes the IPv6 leak),
+    # a single DNS 1.1.1.1 becomes a pair with a fallback. Split routing set by
+    # the user via modify is not a full tunnel and is kept as-is.
+    # This fork lives here on purpose: without it, re-issuing a profile would
+    # not deliver the fix to already issued clients, and "update your profile"
+    # would not cure the leak.
+    # All of this only matters when the saved settings are going to be restored.
+    # Under --reset-routes, and on the recovery path where there was no config,
+    # the value below is not used at all, and a refusal over it would fail a
+    # re-issue that had already succeeded.
     if [[ "${AWG_REGEN_RESET_ROUTES:-0}" != "1" && "$_had_conf" -eq 1 ]]; then
         local _aip_new
         _aip_new=$(_append_ipv6_full_tunnel_route "$current_allowed_ips") && [[ -n "$_aip_new" ]] || {
-            # Файл к этому моменту УЖЕ переписан render_client_config, поэтому
-            # «конфиг не изменён» было бы ложью о состоянии, а это хуже отказа:
-            # у человека не осталось бы повода заглянуть в файл.
-            log_error "Failed to compute AllowedIPs for client '$name'. The config was already regenerated from the current routing mode, but individual settings were NOT restored - check $AWG_DIR/${name}.conf."
+            # The file has ALREADY been rewritten by render_client_config, so
+            # "left unchanged" would be a false statement about state, and that
+            # is worse than the failure it replaced: the operator would have no
+            # reason to look at the file.
+            log_error "Could not compute AllowedIPs for client '$name'. The config has already been regenerated from the current routing mode, but individual settings were NOT restored - check $AWG_DIR/${name}.conf."
             exec {lock_fd}>&-
             unset CLIENT_PSK
             return 1
         }
-        # Клиент, выданный с --allow-ipv6-tunnel, несёт в списке свою IPv6-часть,
-        # и приёмник её не трогает - иначе перевыпуск ломал бы индивидуальную
-        # настройку. Следствие: полному туннелю такого клиента ::/0 обычным regen
-        # НЕ достаётся, а лечится это перевыпуском с --reset-routes.
-        # 🔴 Условие про нативный IPv6 обязательно: БЕЗ него клиенту и положена
-        # туннельная ULA вместо ::/0, это документированное правило, а не утечка.
-        # Без этой проверки предупреждение печаталось бы всегда и советовало бы
-        # команду, которая ничего не изменит - то есть звало бы чинить исправное.
+        # A client issued with --allow-ipv6-tunnel carries its own IPv6 part in
+        # the list, and the appender leaves it alone - otherwise a re-issue would
+        # break an individual setting. Consequence: such a client does NOT get
+        # ::/0 from a plain regen, and the cure is regen --reset-routes.
+        # 🔴 The native-IPv6 condition is mandatory: WITHOUT native IPv6 the
+        # client is supposed to get the tunnel ULA instead of ::/0 - documented
+        # behaviour, not a leak. Without this check the warning would fire always
+        # and prescribe a command that changes nothing, sending the operator to
+        # fix something that is not broken.
         if [[ "${SERVER_HAS_NATIVE_IPV6:-0}" == "1" \
               && "$current_allowed_ips" == *:* && "$current_allowed_ips" != *"::/0"* ]] \
            && _is_full_tunnel "$current_allowed_ips"; then
-            log_warn "Client '$name': the IPv6 part of AllowedIPs was kept as is, ::/0 not appended. To apply the current routing mode, run regen --reset-routes."
+            log_warn "Client '$name': the IPv6 part of AllowedIPs was kept as-is, ::/0 not appended. Run regen --reset-routes to roll out the current routing mode."
         fi
         current_allowed_ips="$_aip_new"
     fi
@@ -3315,6 +3325,12 @@ regenerate_client() {
     # A regular regen still preserves per-client customizations.
     if [[ "${AWG_REGEN_RESET_ROUTES:-0}" == "1" ]]; then
         log "AllowedIPs of client '$name' reset to the global routing mode (--reset-routes)."
+    elif [[ "$_had_conf" -eq 0 ]]; then
+        # There was no config (regen used as recovery), so there is nothing to
+        # preserve and the value from render_client_config stands. Previously the
+        # global list was substituted here, which handed ::/0 to a dual-stack
+        # client on a server without native IPv6, against that client's own rule.
+        log "Client '$name' had no config - AllowedIPs taken from the current routing mode."
     elif ! sed -i "s/^AllowedIPs = .*/AllowedIPs = ${_aip}/" "$_client_conf"; then
         log_error "sed error writing AllowedIPs to $_client_conf"
         exec {lock_fd}>&-

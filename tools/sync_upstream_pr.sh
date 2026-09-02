@@ -2,8 +2,9 @@
 # Prepare an automated upstream sync commit (used by GitHub Actions → Pull Request).
 #
 # - Refreshes observed latest releases for Xray / Hysteria2 in upstream/manifest.json
-# - When bivlked has a newer tag: downloads vendor snapshots, applies bivlked→bivlked
-#   diffs onto Freedom's English AWG helpers, re-applies branding, bumps pins
+# - When bivlked has a newer tag: vendors its official English helpers (*_en.sh),
+#   three-way merges them into Freedom's copies, re-applies the Freedom overlay
+#   and branding, then bumps the pins
 #
 # Exit 0 = no file changes
 # Exit 3 = working tree updated (ready for PR)
@@ -27,10 +28,6 @@ need() {
 need curl
 need python3
 need git
-if ! command -v patch >/dev/null 2>&1; then
-    echo "ERROR: need patch (Ubuntu/Debian: apt install patch)" >&2
-    exit 1
-fi
 
 gh_json() {
     curl -fsSL --max-time 30 -H "User-Agent: $UA" -H "Accept: application/vnd.github+json" "$1"
@@ -57,25 +54,39 @@ else:
 PY
 }
 
+# Freedom helper -> bivlked's official English variant of the same file.
+# Tracking *_en.sh (not the Russian originals) keeps the delta down to the
+# handful of rules in tools/apply_freedom_awg_overlay.py, which is what makes
+# these syncs auto-mergeable.
+upstream_name() {
+    case "$1" in
+        awg_common.sh) echo "awg_common_en.sh" ;;
+        manage_amneziawg.sh) echo "manage_amneziawg_en.sh" ;;
+        *) return 1 ;;
+    esac
+}
+
 download_bivlked() {
     local tag="$1" dest="$2" f
     mkdir -p "$dest"
-    for f in awg_common.sh manage_amneziawg.sh install_amneziawg_en.sh; do
+    for f in awg_common_en.sh manage_amneziawg_en.sh; do
         curl -fsSL --max-time 60 -o "$dest/$f" \
             "https://raw.githubusercontent.com/bivlked/amneziawg-installer/${tag}/${f}" \
             || return 1
     done
 }
 
-# Sync Freedom's forked AWG helper with a newer bivlked tag.
+# Sync a Freedom AWG helper with a newer bivlked tag.
 # 1) git merge-file three-way (base=pin, ours=Freedom, theirs=new tag)
-# 2) overlay: copy bivlked@new, re-apply Freedom customizations from diff(pin, Freedom)
+# 2) overlay: take bivlked@new wholesale, then re-apply the Freedom rules
 apply_bivlked_sync() {
     local old="$1"
     local new="$2"
     local file="$3"
     local target="$ROOT/$file"
-    local oldf="$VENDOR/$old/$file" newf="$VENDOR/$new/$file"
+    local up
+    up="$(upstream_name "$file")" || return 1
+    local oldf="$VENDOR/$old/$up" newf="$VENDOR/$new/$up"
     local bak patchf rej
     [[ -f "$target" && -f "$oldf" && -f "$newf" ]] || return 1
 
@@ -104,30 +115,14 @@ apply_bivlked_sync() {
         return 0
     fi
 
-    # --- Strategy B: bivlked@new + Freedom overlay (English/branding on top of upstream) ---
+    # --- Strategy B: take bivlked@new wholesale ---
+    # Freedom carries no code of its own in these two files, only the overlay
+    # rules, so upstream's version plus a re-run of the overlay is a complete
+    # and lossless result. The overlay itself fails if a rule stops matching.
     cp -a "$newf" "$target"
-    patchf="$(mktemp)"
-    diff -u "$oldf" "$bak" > "$patchf" || true
-    if [[ -s "$patchf" ]]; then
-        set +e
-        # --no-backup-if-mismatch: GNU patch otherwise leaves a .orig on any
-        # fuzzed/rejected hunk, and `git add -A` in CI commits it.
-        patch --forward --batch --fuzz=3 --no-backup-if-mismatch "$target" < "$patchf"
-        local patch_rc=$?
-        set -e
-        rej="${target}.rej"
-        if [[ "$patch_rc" -eq 0 && ! -f "$rej" ]]; then
-            rm -f "$bak" "$patchf" "${target}.orig"
-            echo "Applied overlay sync to $file ($old → $new)"
-            return 0
-        fi
-        rm -f "$rej" "${target}.orig"
-    fi
-
-    mv -f "$bak" "$target"
-    rm -f "$patchf" "${target}.orig"
-    echo "ERROR: AWG sync failed for $file ($old → $new) — three-way and overlay both failed" >&2
-    return 1
+    rm -f "$bak" "${target}.orig" "${target}.rej"
+    echo "Took bivlked $up wholesale for $file ($old → $new); overlay re-applies Freedom rules"
+    return 0
 }
 
 cd "$ROOT"
@@ -199,9 +194,19 @@ if [[ -n "$BIVLKED_PIN" && -n "$BIVLKED_LATEST" && "$BIVLKED_LATEST" != "$BIVLKE
         done
 
         if [[ "$awg_ok" -eq 1 ]]; then
+            # The overlay is the whole Freedom delta; it exits non-zero when a
+            # rule no longer matches upstream, which must block the pin bump.
+            python3 "$ROOT/tools/apply_freedom_awg_overlay.py" || {
+                awg_ok=0
+                NOTES+=("Freedom overlay no longer matches upstream — update \`tools/apply_freedom_awg_overlay.py\` (see job log for the failing rules).")
+                git checkout -- awg_common.sh manage_amneziawg.sh 2>/dev/null || true
+            }
+        fi
+
+        if [[ "$awg_ok" -eq 1 ]]; then
             bash "$ROOT/tools/apply_freedom_awg_branding.sh" "$BIVLKED_LATEST" || {
                 awg_ok=0
-                NOTES+=("Freedom branding step failed after AWG patch.")
+                NOTES+=("Freedom branding step failed after AWG sync.")
                 git checkout -- awg_common.sh manage_amneziawg.sh 2>/dev/null || true
             }
         fi
@@ -224,9 +229,9 @@ path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding=
 PY
             AWG_SYNCED=1
             CHANGES=1
-            NOTES+=("AmneziaWG helpers synced via bivlked delta ${BIVLKED_PIN} → ${BIVLKED_LATEST}.")
+            NOTES+=("AmneziaWG helpers synced from bivlked \`*_en.sh\` ${BIVLKED_PIN} → ${BIVLKED_LATEST}.")
         else
-            NOTES+=("Skipped AWG pin bump because patch did not apply cleanly.")
+            NOTES+=("Skipped AWG pin bump because the sync did not complete cleanly.")
         fi
     fi
 else

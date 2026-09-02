@@ -90,7 +90,7 @@ download_bivlked_files() {
     local tag="$1" dest="$2"
     local f
     mkdir -p "$dest"
-    for f in install_amneziawg_en.sh awg_common.sh manage_amneziawg.sh; do
+    for f in awg_common_en.sh manage_amneziawg_en.sh; do
         curl -fsSL --max-time 60 -o "$dest/$f" \
             "https://raw.githubusercontent.com/bivlked/amneziawg-installer/${tag}/${f}" \
             || echo "WARN: failed to fetch $f @$tag" >&2
@@ -191,7 +191,7 @@ fi
     echo "## Notes"
     echo ""
     echo "- Do **not** copy bivlked \`install_amneziawg_en.sh\` wholesale — Freedom uses \`install_freedom.sh\`."
-    echo "- Daily CI applies bivlked→bivlked diffs onto English AWG helpers; see [UPSTREAM.md](../UPSTREAM.md)."
+    echo "- Daily CI merges bivlked's \`*_en.sh\` helpers into Freedom's copies; see [UPSTREAM.md](../UPSTREAM.md)."
     echo "- Xray / Hysteria \`latest_observed\` is informational; VPS \`--update\` refreshes those binaries."
 } >> "$REPORT"
 
