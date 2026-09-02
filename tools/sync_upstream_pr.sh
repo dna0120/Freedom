@@ -110,20 +110,22 @@ apply_bivlked_sync() {
     diff -u "$oldf" "$bak" > "$patchf" || true
     if [[ -s "$patchf" ]]; then
         set +e
-        patch --forward --batch --fuzz=3 "$target" < "$patchf"
+        # --no-backup-if-mismatch: GNU patch otherwise leaves a .orig on any
+        # fuzzed/rejected hunk, and `git add -A` in CI commits it.
+        patch --forward --batch --fuzz=3 --no-backup-if-mismatch "$target" < "$patchf"
         local patch_rc=$?
         set -e
         rej="${target}.rej"
         if [[ "$patch_rc" -eq 0 && ! -f "$rej" ]]; then
-            rm -f "$bak" "$patchf"
+            rm -f "$bak" "$patchf" "${target}.orig"
             echo "Applied overlay sync to $file ($old → $new)"
             return 0
         fi
-        rm -f "$rej"
+        rm -f "$rej" "${target}.orig"
     fi
 
     mv -f "$bak" "$target"
-    rm -f "$patchf"
+    rm -f "$patchf" "${target}.orig"
     echo "ERROR: AWG sync failed for $file ($old → $new) — three-way and overlay both failed" >&2
     return 1
 }

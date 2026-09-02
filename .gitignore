@@ -3,3 +3,8 @@ upstream/REPORT.md
 upstream/SYNC_PR_BODY.md
 upstream/sync-step.log
 .tmp_*
+
+# Merge/patch artifacts — never belong in a sync commit
+*.orig
+*.rej
+*.sync.bak
