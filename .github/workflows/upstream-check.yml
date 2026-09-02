@@ -115,10 +115,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ahead=$(gh api "repos/${{ github.repository }}/compare/main...auto/upstream-sync" \
-            --jq '.ahead_by // 0' 2>/dev/null || echo 0)
+          cmp=$(gh api "repos/${{ github.repository }}/compare/main...auto/upstream-sync" \
+            --jq '"\(.ahead_by // 0) \(.behind_by // 0)"' 2>/dev/null || echo "0 0")
+          ahead="${cmp%% *}"
+          behind="${cmp##* }"
+          echo "auto/upstream-sync is $ahead ahead / $behind behind main."
+          # A branch that is also behind main is left over from a squash merge:
+          # its commit is already in main, so a PR from it would revert content.
+          # Report 0 and let the next sync recreate the branch from main.
+          if [[ "$behind" != "0" ]]; then
+            echo "Stale sync branch (behind main) — not opening a PR for it."
+            ahead=0
+          fi
           echo "ahead=$ahead" >> "$GITHUB_OUTPUT"
-          echo "auto/upstream-sync is $ahead commit(s) ahead of main."
 
       - name: Open or update pull request
         if: |

@@ -80,4 +80,8 @@ jobs:
             exit 0
           fi
           echo "Squash-merging PR #$pr after Upstream sync CI passed."
-          gh pr merge "$pr" --squash
+          # --delete-branch: a squash merge leaves auto/upstream-sync pointing at
+          # the pre-squash commit, so the next run sees it "ahead of main" and
+          # opens a PR that would revert already-merged content. The push step
+          # recreates the branch from main on the next sync.
+          gh pr merge "$pr" --squash --delete-branch
