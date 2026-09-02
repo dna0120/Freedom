@@ -1,11 +1,11 @@
 {
-  "freedom_version": "1.3.4",
+  "freedom_version": "1.3.5",
   "sources": [
     {
       "id": "bivlked-awg",
       "name": "AmneziaWG installer (bivlked)",
       "repo": "bivlked/amneziawg-installer",
-      "pinned_tag": "v5.30.0",
+      "pinned_tag": "v5.31.0",
       "latest_observed": "v5.31.0",
       "track": "releases",
       "files": [

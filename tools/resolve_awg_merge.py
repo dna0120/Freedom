@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
-"""Resolve git merge-file conflicts for Freedom AWG sync (English + bivlked v5.29)."""
+"""Resolve git merge-file conflicts for Freedom AWG sync (English fork + bivlked).
+
+Usage: resolve_awg_merge.py <target version, e.g. 5.31.0>
+"""
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
+
+TARGET_VERSION = "0.0.0"
 
 CONFLICT_RE = re.compile(
     r"^<<<<<<< .*?\n(.*?)^=======\n(.*?)^>>>>>>> .*?\n",
@@ -58,9 +64,9 @@ def resolve_block(ours: str, theirs: str, filename: str) -> str:
         # Freedom English header; version bumped later by branding script
         out = ours
         # Version fields bumped later by apply_freedom_awg_branding.sh
-        out = re.sub(r'Version: [\d.]+', 'Version: 5.30.0', out)
-        out = re.sub(r'AWG_COMMON_VERSION="[\d.]+"', 'AWG_COMMON_VERSION="5.30.0"', out)
-        out = re.sub(r'SCRIPT_VERSION="[\d.]+"', 'SCRIPT_VERSION="5.30.0"', out)
+        out = re.sub(r"Version: [\d.]+", f"Version: {TARGET_VERSION}", out)
+        out = re.sub(r'AWG_COMMON_VERSION="[\d.]+"', f'AWG_COMMON_VERSION="{TARGET_VERSION}"', out)
+        out = re.sub(r'SCRIPT_VERSION="[\d.]+"', f'SCRIPT_VERSION="{TARGET_VERSION}"', out)
         return out
 
     if prefer_theirs_functionality(ours, theirs):
@@ -91,11 +97,21 @@ def resolve_file(path: Path) -> int:
     resolved = CONFLICT_RE.sub(repl, text)
     if "<<<<<<<" in resolved:
         raise SystemExit(f"Unresolved conflicts remain in {path}")
-    path.write_text(resolved, encoding="utf-8")
+    # newline="" keeps LF on Windows; the SHA256 pins in install_freedom.sh
+    # must match the LF blob that GitHub serves to the VPS.
+    path.write_text(resolved, encoding="utf-8", newline="")
     return n
 
 
 def main() -> None:
+    global TARGET_VERSION
+    if len(sys.argv) > 1:
+        TARGET_VERSION = sys.argv[1].lstrip("v")
+    elif os.environ.get("AWG_TARGET_VERSION"):
+        TARGET_VERSION = os.environ["AWG_TARGET_VERSION"].lstrip("v")
+    else:
+        raise SystemExit("usage: resolve_awg_merge.py <target version, e.g. 5.31.0>")
+
     root = Path(__file__).resolve().parents[1]
     total = 0
     for name in ("awg_common.sh", "manage_amneziawg.sh"):

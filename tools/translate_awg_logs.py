@@ -233,6 +233,35 @@ REPLACEMENTS = [
         'log_warn "awg show dump завершился с кодом $_dump_rc - состояние клиентов неизвестно"',
         'log_warn "awg show dump exited with code $_dump_rc - client state unknown"',
     ),
+    # v5.31.0 full-tunnel detection / IPv6 route append
+    (
+        'log_error "Внутренняя таблица служебных диапазонов испорчена: \'$cidr\'."',
+        'log_error "Internal table of reserved ranges is corrupted: \'$cidr\'."',
+    ),
+    (
+        'log_warn "AllowedIPs: маршрутов ${#toks[@]}, это больше предела проверки (512) - список считаю раздельным, ::/0 не дописываю."',
+        'log_warn "AllowedIPs: ${#toks[@]} routes exceed the check limit (512) - treating the list as split tunnel, ::/0 not appended."',
+    ),
+    (
+        'log_warn "AllowedIPs: маршрут \'$tok\' не разобран - список считаю раздельным, ::/0 не дописываю."',
+        'log_warn "AllowedIPs: route \'$tok\' could not be parsed - treating the list as split tunnel, ::/0 not appended."',
+    ),
+    (
+        'log_warn "AllowedIPs: не удалось упорядочить маршруты - полноту туннеля не проверяю, ::/0 не дописываю."',
+        'log_warn "AllowedIPs: failed to sort routes - full-tunnel coverage not checked, ::/0 not appended."',
+    ),
+    (
+        'log_error "Не удалось вычислить AllowedIPs - клиентский конфиг не создан."',
+        'log_error "Failed to compute AllowedIPs - client config was not created."',
+    ),
+    (
+        'log_error "Не удалось вычислить AllowedIPs для клиента \'$name\'. Конфиг уже перегенерирован из текущего режима маршрутизации, но индивидуальные настройки НЕ восстановлены - проверьте $AWG_DIR/${name}.conf."',
+        'log_error "Failed to compute AllowedIPs for client \'$name\'. The config was already regenerated from the current routing mode, but individual settings were NOT restored - check $AWG_DIR/${name}.conf."',
+    ),
+    (
+        'log_warn "Клиент \'$name\': IPv6-часть AllowedIPs сохранена как есть, ::/0 не дописан. Чтобы раздать текущий режим маршрутизации, выполните regen --reset-routes."',
+        'log_warn "Client \'$name\': the IPv6 part of AllowedIPs was kept as is, ::/0 not appended. To apply the current routing mode, run regen --reset-routes."',
+    ),
 ]
 
 
@@ -243,7 +272,9 @@ def main() -> None:
         text = path.read_text(encoding="utf-8")
         for old, new in REPLACEMENTS:
             text = text.replace(old, new)
-        path.write_text(text, encoding="utf-8")
+        # newline="" keeps LF on Windows; the SHA256 pins in install_freedom.sh
+        # must match the LF blob that GitHub serves to the VPS.
+        path.write_text(text, encoding="utf-8", newline="")
         print(f"Updated {name}")
 
 

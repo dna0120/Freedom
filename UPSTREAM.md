@@ -9,7 +9,7 @@ Freedom is a fork-plus-extension. **GitHub Actions** keeps observed upstream rel
 | [XTLS/Xray-core](https://github.com/XTLS/Xray-core) | Xray binary | `latest_observed` in manifest (CI daily); VPS `--update` installs binary |
 | [apernet/hysteria](https://github.com/apernet/hysteria) | Hysteria2 binary | Same as Xray |
 
-Pinned AWG installer tag: [`upstream/manifest.json`](upstream/manifest.json) (`bivlked-awg.pinned_tag`) and `UPSTREAM_AWG_PIN` in `install_freedom.sh`. Current pin: **v5.30.0**.
+Pinned AWG installer tag: [`upstream/manifest.json`](upstream/manifest.json) (`bivlked-awg.pinned_tag`) and `UPSTREAM_AWG_PIN` in `install_freedom.sh`. Current pin: **v5.31.0**.
 
 ## Automated GitHub sync (daily)
 
@@ -30,36 +30,19 @@ Workflow: [`.github/workflows/upstream-check.yml`](.github/workflows/upstream-ch
 
 If AWG sync fails (large pin gap, e.g. v5.21.2 → v5.29.0), the PR still records the failure in `upstream/SYNC_PR_BODY.md` and **skips the pin bump** — maintainer merges once manually, then daily CI can auto-sync smaller jumps.
 
-## One-time AWG catch-up (when auto sync fails)
+## AWG catch-up (when auto sync fails)
 
-Large gaps between the pin and bivlked latest need a **manual merge once**; after that, daily CI usually auto-merges incremental tags.
+Because Freedom's helpers are an **English fork** of bivlked's Russian scripts, the CI delta almost never applies on its own — expect to run the catch-up for most new tags:
 
 ```bash
-# 1) Vendor snapshots (replace tags with manifest pin / latest)
-PIN=v5.21.2 LATEST=v5.29.0
-mkdir -p "upstream/vendor/bivlked/$PIN" "upstream/vendor/bivlked/$LATEST"
-for f in awg_common.sh manage_amneziawg.sh; do
-  curl -fsSL -o "upstream/vendor/bivlked/$PIN/$f" \
-    "https://raw.githubusercontent.com/bivlked/amneziawg-installer/${PIN}/${f}"
-  curl -fsSL -o "upstream/vendor/bivlked/$LATEST/$f" \
-    "https://raw.githubusercontent.com/bivlked/amneziawg-installer/${LATEST}/${f}"
-done
-
-# 2) Three-way merge per file (resolve <<<<<<< conflicts, keep English + Freedom logic)
-for f in awg_common.sh manage_amneziawg.sh; do
-  cp "$f" "${f}.bak"
-  git merge-file "$f" "upstream/vendor/bivlked/$PIN/$f" "upstream/vendor/bivlked/$LATEST/$f"
-  # edit $f until no conflict markers remain
-done
-
-# 3) Branding + pins
-bash tools/apply_freedom_awg_branding.sh "$LATEST"
-# bump UPSTREAM_AWG_PIN, SCRIPT_VERSION, pinned_tag in manifest, FREEDOM_VERSION, then:
-bash tools/update_sha_pins.sh
-bash tools/check_upstream.sh
+bash tools/manual_awg_merge.sh v5.30.0 v5.31.0   # <current pin> <target tag>
 ```
 
-Open a normal PR (not bot). After merge, cron sync handles v5.29.0 → v5.30.0+ automatically when CI passes.
+It vendors both snapshots, three-way merges, runs [`tools/resolve_awg_merge.py`](tools/resolve_awg_merge.py) on the conflicts, translates new Russian log strings via [`tools/translate_awg_logs.py`](tools/translate_awg_logs.py), re-applies branding, then bumps `UPSTREAM_AWG_PIN` / `SCRIPT_VERSION` / `FREEDOM_VERSION` / `pinned_tag` and the SHA256 pins.
+
+Any Russian string it could not translate is printed as a warning — add it to `translate_awg_logs.py` and re-run that script plus `tools/update_sha_pins.sh`.
+
+**Line endings matter.** `.gitattributes` stores `*.sh` as `eol=lf`, and the VPS verifies the SHA256 of the raw GitHub blob. The pin helpers therefore hash the **LF form**, not the local file — do not replace that with a plain `sha256sum`.
 
 ## Maintainer check (local)
 

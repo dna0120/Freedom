@@ -18,7 +18,9 @@ tmp="$(mktemp)"
 cp "$INSTALLER" "$tmp"
 
 for var in "${!FILES[@]}"; do
-    hash="$(sha256sum "${FILES[$var]}" | awk '{print $1}')"
+    # Hash the LF form: .gitattributes stores *.sh with eol=lf, and the VPS
+    # verifies against the raw.githubusercontent blob, not the local file.
+    hash="$(sed 's/\r$//' "${FILES[$var]}" | sha256sum | awk '{print $1}')"
     sed -i "s/^${var}=\"[^\"]*\"/${var}=\"${hash}\"/" "$tmp"
     echo "Updated $var=$hash"
 done
