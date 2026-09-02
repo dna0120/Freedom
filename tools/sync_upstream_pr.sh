@@ -185,7 +185,15 @@ if [[ -n "$BIVLKED_PIN" && -n "$BIVLKED_LATEST" && "$BIVLKED_LATEST" != "$BIVLKE
         NOTES+=("Failed to download bivlked vendor snapshot for \`${BIVLKED_LATEST}\`.")
     else
         awg_ok=1
+        # Strategy B below can take upstream's file wholesale, so first prove the
+        # helpers really are nothing but upstream@pin plus the overlay.
+        if ! python3 "$ROOT/tools/apply_freedom_awg_overlay.py" --drift "$VENDOR/$BIVLKED_PIN"; then
+            awg_ok=0
+            NOTES+=("AWG helpers carry edits that \`tools/apply_freedom_awg_overlay.py\` does not describe — the sync would drop them. Add a rule for those edits, then re-run.")
+        fi
+
         for f in awg_common.sh manage_amneziawg.sh; do
+            [[ "$awg_ok" -eq 1 ]] || break
             if ! apply_bivlked_sync "$BIVLKED_PIN" "$BIVLKED_LATEST" "$f"; then
                 awg_ok=0
                 NOTES+=("AWG sync failed for \`$f\` — manual cherry-pick required (see \`upstream/vendor/bivlked/\`).")

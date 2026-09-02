@@ -9,7 +9,15 @@ already applied (idempotent), applicable, or **missing** — in which case the
 script fails loudly. That is deliberate: a silently dropped customisation is far
 worse than a red CI run, because it ships a wrong config to every client.
 
-Usage: apply_freedom_awg_overlay.py [--check]
+Usage:
+  apply_freedom_awg_overlay.py            apply the rules to the repo helpers
+  apply_freedom_awg_overlay.py --check    fail unless every rule is already applied
+  apply_freedom_awg_overlay.py --drift DIR
+        DIR holds upstream's *_en.sh at the current pin. Fails if a repo helper
+        is anything other than that file with the rules applied - i.e. if
+        someone hand-edited a helper without adding a rule here. The sync path
+        may replace a helper with upstream's copy wholesale, so undeclared edits
+        would otherwise disappear without a trace.
 """
 from __future__ import annotations
 
@@ -150,10 +158,14 @@ RULES: list[tuple[str, str, str, str]] = [
 ]
 
 
-def main() -> None:
-    check_only = "--check" in sys.argv[1:]
-    texts = {name: (ROOT / name).read_text(encoding="utf-8") for name in ("awg_common.sh", "manage_amneziawg.sh")}
+HELPERS = {
+    "awg_common.sh": "awg_common_en.sh",
+    "manage_amneziawg.sh": "manage_amneziawg_en.sh",
+}
 
+
+def apply_rules(texts: dict[str, str], *, verbose: bool) -> tuple[int, int]:
+    """Apply every rule in place; raises SystemExit if a rule stops matching."""
     applied = skipped = 0
     missing: list[str] = []
 
@@ -170,7 +182,8 @@ def main() -> None:
             continue
         texts[name] = text.replace(upstream, freedom, 1)
         applied += 1
-        print(f"applied  {name}: {desc}")
+        if verbose:
+            print(f"applied  {name}: {desc}")
 
     if missing:
         print("\nFreedom customisations that no longer match upstream:", file=sys.stderr)
@@ -182,6 +195,48 @@ def main() -> None:
             file=sys.stderr,
         )
         raise SystemExit(1)
+
+    return applied, skipped
+
+
+def check_drift(vendor_dir: Path) -> None:
+    """Fail unless each helper is exactly upstream@pin with the rules applied."""
+    drifted = False
+    for name, upstream_name in HELPERS.items():
+        src = vendor_dir / upstream_name
+        if not src.is_file():
+            raise SystemExit(f"drift check: missing {src}")
+        rebuilt = {
+            n: (src if n == name else ROOT / n).read_text(encoding="utf-8")
+            for n in HELPERS
+        }
+        apply_rules(rebuilt, verbose=False)
+        if rebuilt[name] != (ROOT / name).read_text(encoding="utf-8"):
+            drifted = True
+            print(f"drift: {name} is not upstream@pin plus the overlay", file=sys.stderr)
+
+    if drifted:
+        print(
+            "\nA helper carries edits that no rule in this file describes. A sync "
+            "can replace these helpers with upstream's copy, which would drop those "
+            "edits. Add a rule for them, or revert them.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    print("drift check: helpers match upstream@pin plus the overlay")
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    if args and args[0] == "--drift":
+        if len(args) != 2:
+            raise SystemExit("usage: apply_freedom_awg_overlay.py --drift <vendor dir>")
+        check_drift(Path(args[1]))
+        return
+
+    check_only = "--check" in args
+    texts = {name: (ROOT / name).read_text(encoding="utf-8") for name in HELPERS}
+    applied, skipped = apply_rules(texts, verbose=not check_only)
 
     if check_only:
         print(f"check: {skipped} already applied, {applied} would be applied")

@@ -44,7 +44,13 @@ Tracking `*_en.sh` removes the translation from the equation. Freedom's entire d
 
 Each rule is an exact string swap that is idempotent when already applied and **fails the sync** when upstream rewords the surrounding code. A red CI run is the point: a customisation that vanishes quietly ships a wrong MTU or the wrong DNS to every client.
 
-So when a sync fails, the fix is almost always to update the matching rule in that file — not to hand-edit the helpers.
+The sync may also replace a helper with upstream's copy wholesale, which would erase any edit the overlay does not know about. A drift guard runs first and refuses to sync in that case:
+
+```bash
+python3 tools/apply_freedom_awg_overlay.py --drift upstream/vendor/bivlked/<pin>
+```
+
+So when a sync fails, the fix is almost always to update the matching rule in that file — **never** to hand-edit the helpers.
 
 ## AWG catch-up (when auto sync fails)
 
