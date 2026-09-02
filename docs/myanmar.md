@@ -48,4 +48,4 @@ If step 2 **fails** (UDP never arrives), you have a different problem: UDP block
 The installer is free. Diagnosis against a live ISP, hardening, and keeping a node alive when DPI changes is not.
 
 - Email: [dat.tranthanh0919@gmail.com](mailto:dat.tranthanh0919@gmail.com)
-- Upwork: **Tran T.** — *Network Engineer | VPN Obfuscation & Infra Specialist*
+- Upwork: [Tran T. — Network Engineer | VPN Obfuscation & Infra Specialist](https://www.upwork.com/freelancers/~010476dc2bd9f8d912)

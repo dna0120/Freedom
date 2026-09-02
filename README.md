@@ -7,7 +7,7 @@ English first. [Tiếng Việt](#tiếng-việt) below.
 **Work with me** — I take paid jobs for DPI diagnosis, deploy, and keep-alive (not “install the NordVPN app”).
 
 - Email: [dat.tranthanh0919@gmail.com](mailto:dat.tranthanh0919@gmail.com)
-- Upwork: **Tran T.** — *Network Engineer | VPN Obfuscation & Infra Specialist*
+- Upwork: [Tran T. — Network Engineer | VPN Obfuscation & Infra Specialist](https://www.upwork.com/freelancers/~010476dc2bd9f8d912)
 - Case study: [WireGuard died in Myanmar; AmneziaWG did not](docs/myanmar.md)
 
 This repo is the installer. Live per-country tuning, monitoring, and incident response stay private / paid.
@@ -141,7 +141,7 @@ Maintainer: `bash tools/verify_sha_pins.sh`, `bash tools/check_upstream.sh`, `ba
 
 Script cài đặt và quản lý **AmneziaWG**, **Xray (VLESS + REALITY / CDN)** và **Hysteria2** trên cùng một VPS, menu kiểu angristan.
 
-**Thuê triển khai / chẩn đoán DPI:** [dat.tranthanh0919@gmail.com](mailto:dat.tranthanh0919@gmail.com) · Upwork **Tran T.** · [case Myanmar](docs/myanmar.md)
+**Thuê triển khai / chẩn đoán DPI:** [dat.tranthanh0919@gmail.com](mailto:dat.tranthanh0919@gmail.com) · [Upwork Tran T.](https://www.upwork.com/freelancers/~010476dc2bd9f8d912) · [case Myanmar](docs/myanmar.md)
 
 Installer miễn phí. Bộ tham số đang sống theo từng quốc gia, giám sát, và xử lý khi DPI đổi — đó là việc trả phí.
 
