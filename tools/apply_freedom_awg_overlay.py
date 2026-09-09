@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FREEDOM_RAW = "https://raw.githubusercontent.com/dna0120/Freedom/main"
 
 # (file, description, upstream text, Freedom text)
-RULES: list[tuple[str, str, str, str]] = [
+RULES: list[tuple[str, str, str | tuple[str, ...], str | tuple[str, ...]]] = [
     # --- branding -------------------------------------------------------
     (
         "awg_common.sh",
@@ -131,8 +131,14 @@ RULES: list[tuple[str, str, str, str]] = [
     (
         "awg_common.sh",
         "CLIENT_DNS_1/2 and ENABLE_BBR are Freedom keys in awgsetup_cfg.init",
-        "AWG_APPLY_MODE|ALLOW_IPV6_TUNNEL|IPV6_SUBNET|SERVER_HAS_NATIVE_IPV6|PREV_AWG_PORT|CLIENT_ISOLATION|CLIENT_ISOLATION_NET|AWG_SERVER_NAME)",
-        "AWG_APPLY_MODE|ALLOW_IPV6_TUNNEL|IPV6_SUBNET|SERVER_HAS_NATIVE_IPV6|PREV_AWG_PORT|CLIENT_ISOLATION|CLIENT_ISOLATION_NET|AWG_SERVER_NAME|ENABLE_BBR|CLIENT_DNS_1|CLIENT_DNS_2)",
+        (
+            "AWG_APPLY_MODE|ALLOW_IPV6_TUNNEL|IPV6_SUBNET|SERVER_HAS_NATIVE_IPV6|PREV_AWG_PORT|CLIENT_ISOLATION|CLIENT_ISOLATION_NET|AWG_SERVER_NAME)",
+            "AWG_APPLY_MODE|ALLOW_IPV6_TUNNEL|IPV6_SUBNET|SERVER_HAS_NATIVE_IPV6|PREV_AWG_PORT|CLIENT_ISOLATION|CLIENT_ISOLATION_NET|AWG_PROTOCOL|AWG_SERVER_NAME)",
+        ),
+        (
+            "AWG_APPLY_MODE|ALLOW_IPV6_TUNNEL|IPV6_SUBNET|SERVER_HAS_NATIVE_IPV6|PREV_AWG_PORT|CLIENT_ISOLATION|CLIENT_ISOLATION_NET|AWG_SERVER_NAME|ENABLE_BBR|CLIENT_DNS_1|CLIENT_DNS_2)",
+            "AWG_APPLY_MODE|ALLOW_IPV6_TUNNEL|IPV6_SUBNET|SERVER_HAS_NATIVE_IPV6|PREV_AWG_PORT|CLIENT_ISOLATION|CLIENT_ISOLATION_NET|AWG_PROTOCOL|AWG_SERVER_NAME|ENABLE_BBR|CLIENT_DNS_1|CLIENT_DNS_2)",
+        ),
     ),
     (
         "awg_common.sh",
@@ -171,19 +177,28 @@ def apply_rules(texts: dict[str, str], *, verbose: bool) -> tuple[int, int]:
 
     for name, desc, upstream, freedom in RULES:
         text = texts[name]
-        if freedom in text:
-            skipped += 1
-            continue
-        if upstream not in text:
+        upstreams = (upstream,) if isinstance(upstream, str) else upstream
+        freedoms = (freedom,) if isinstance(freedom, str) else freedom
+        matched = False
+        for upstream_text, freedom_text in zip(upstreams, freedoms):
+            if freedom_text in text:
+                skipped += 1
+                matched = True
+                break
+            if upstream_text not in text:
+                continue
+            if text.count(upstream_text) != 1:
+                missing.append(f"{name}: {desc} (matched {text.count(upstream_text)} times, expected 1)")
+                matched = True
+                break
+            texts[name] = text.replace(upstream_text, freedom_text, 1)
+            applied += 1
+            matched = True
+            if verbose:
+                print(f"applied  {name}: {desc}")
+            break
+        if not matched:
             missing.append(f"{name}: {desc}")
-            continue
-        if text.count(upstream) != 1:
-            missing.append(f"{name}: {desc} (matched {text.count(upstream)} times, expected 1)")
-            continue
-        texts[name] = text.replace(upstream, freedom, 1)
-        applied += 1
-        if verbose:
-            print(f"applied  {name}: {desc}")
 
     if missing:
         print("\nFreedom customisations that no longer match upstream:", file=sys.stderr)
