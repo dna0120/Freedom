@@ -10,6 +10,7 @@ on:
       - ".github/workflows/upstream-check.yml"
       - "tools/sync_upstream_pr.sh"
       - "tools/check_upstream.sh"
+      - "tools/apply_freedom_awg_overlay.py"
       - "upstream/manifest.json"
 
 permissions:
