@@ -21,6 +21,7 @@ Usage:
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -214,6 +215,17 @@ def apply_rules(texts: dict[str, str], *, verbose: bool) -> tuple[int, int]:
     return applied, skipped
 
 
+# bivlked's *_en.sh carry a "# Date:" header that Freedom re-stamps with the
+# day the sync ran (tools/apply_freedom_awg_branding.sh). That single cosmetic
+# line must not count as drift, otherwise every future sync is blocked by a
+# false positive before the overlay can run.
+_DRIFT_DATE_RE = re.compile(r"^# Date: .*$", re.MULTILINE)
+
+
+def _normalize_header(text: str) -> str:
+    return _DRIFT_DATE_RE.sub("# Date: <stamped-at-sync>", text)
+
+
 def check_drift(vendor_dir: Path) -> None:
     """Fail unless each helper is exactly upstream@pin with the rules applied."""
     drifted = False
@@ -226,7 +238,8 @@ def check_drift(vendor_dir: Path) -> None:
             for n in HELPERS
         }
         apply_rules(rebuilt, verbose=False)
-        if rebuilt[name] != (ROOT / name).read_text(encoding="utf-8"):
+        actual = (ROOT / name).read_text(encoding="utf-8")
+        if _normalize_header(rebuilt[name]) != _normalize_header(actual):
             drifted = True
             print(f"drift: {name} is not upstream@pin plus the overlay", file=sys.stderr)
 
