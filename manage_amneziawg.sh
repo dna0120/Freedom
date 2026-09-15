@@ -8,14 +8,14 @@ fi
 # ==============================================================================
 # AmneziaWG 2.0 peer management script
 # Author: @dna0120
-# Version: 5.32.0
-# Date: 2026-09-09
+# Version: 5.34.1
+# Date: 2026-09-15
 # Repository: https://github.com/dna0120/Freedom
 # ==============================================================================
 
 # --- Safe mode and Constants ---
 # shellcheck disable=SC2034
-SCRIPT_VERSION="5.32.0"
+SCRIPT_VERSION="5.34.1"
 set -o pipefail
 AWG_DIR="/root/awg"
 SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"
@@ -1107,6 +1107,35 @@ modify_client() {
         return 1
     fi
 
+    # The I1-I5 lines of the client config itself get the same check as the
+    # server's: modify encodes the QR from this file as is (vpn:// takes I1-I5
+    # from the server, which load_awg_params checks), and a dangerous value could
+    # have reached it earlier, for example through a regen before the check
+    # existed. Such a profile is not reissued, and neither the .conf nor the
+    # files are touched.
+    command -v awg_cps_check_safe >/dev/null 2>&1 || {
+        log_error "awg_common.sh is outdated: awg_cps_check_safe is missing. Update both halves to one version."
+        _JSON_ERR="awg_common.sh is outdated: awg_cps_check_safe is missing"
+        exec {modify_lock_fd}>&-
+        return 1
+    }
+    local _cl _ck _cw _cbad=0 _cfirst=""
+    while IFS= read -r _cl || [[ -n "$_cl" ]]; do
+        [[ "$_cl" =~ ^[[:space:]]*([Ii][1-5])[[:space:]]*=(.*)$ ]] || continue
+        _ck="${BASH_REMATCH[1]}"
+        if ! _cw=$(awg_cps_check_safe "${BASH_REMATCH[2]}"); then
+            log_error "Parameter '$_ck' in $cf is unsafe: ${_cw} (upstream amneziawg-linux-kernel-module#233)"
+            _cbad=1
+            [[ -n "$_cfirst" ]] || _cfirst="$_ck: $_cw"
+        fi
+    done < "$cf"
+    if [[ "$_cbad" -eq 1 ]]; then
+        log_error "Not reissuing profile '$name' with such a value. Run regen '$name': it rewrites I1-I5 from the server, but it also resets Endpoint to the server's, so repeat a changed Endpoint with modify afterwards. If regen refuses too, the unsafe value is in $SERVER_CONF_FILE."
+        _JSON_ERR="unsafe I1-I5 in the client config $cf ($_cfirst)"
+        exec {modify_lock_fd}>&-
+        return 1
+    fi
+
     log "Changing '$param' to '$value' for '$name'..."
     local bak
     bak="${cf}.bak-$(date +%F_%H-%M-%S)"
@@ -1163,13 +1192,39 @@ modify_client() {
             ;;
     esac
 
+    # QR and vpn:// files are removed BEFORE the .conf edit and rebuilt after
+    # it. A previous copy carries the old values, and whatever hands these
+    # files out would present it as current. Removing first gives two
+    # properties: a failed or interrupted rebuild leaves a missing file rather
+    # than a stale copy, and a failed removal returns an error with the .conf
+    # untouched. The value checks run above, so a refused edit keeps the files.
+    local _df
+    for _df in "$AWG_DIR/${name}.png" "$AWG_DIR/${name}.vpnuri" "$AWG_DIR/${name}.vpnuri.png"; do
+        [[ -e "$_df" || -L "$_df" ]] || continue
+        if ! rm -f "$_df" || [[ -e "$_df" || -L "$_df" ]]; then
+            log_error "Failed to remove $_df before the edit - parameter '$param' was not changed."
+            log_warn "Fix the cause and repeat this modify: it rebuilds the QR and vpn:// files removed before this one."
+            _JSON_ERR="could not remove $_df, the .conf is unchanged; repeat modify once the cause is fixed"
+            rm -f "$bak"
+            exec {modify_lock_fd}>&-
+            return 1
+        fi
+    done
+
     local escaped_value
     escaped_value=$(escape_sed "$value")
     if ! sed -i "s#^${param}[[:space:]]*=[[:space:]]*.*#${param} = ${escaped_value}#" "$cf"; then
         log_error "sed error. Restoring..."
         # After a successful rollback the .bak is identical to the config -
         # remove it so repeated failed modifies do not pile .bak files in $AWG_DIR.
-        if cp "$bak" "$cf"; then rm -f "$bak"; else log_warn "Restore error."; fi
+        if cp "$bak" "$cf"; then
+            rm -f "$bak"
+            log_warn "QR and vpn:// files of client '$name' may have been removed before the edit - fix the cause and repeat modify, it rebuilds them."
+            _JSON_ERR="edit rolled back, the .conf is restored; repeat modify to rebuild QR and vpn://"
+        else
+            log_error "Could not restore $cf from $bak - the backup is kept, put it back by hand."
+            _JSON_ERR="edit failed and the .conf was not restored; backup: $bak"
+        fi
         exec {modify_lock_fd}>&-
         return 1
     fi
@@ -1178,7 +1233,14 @@ modify_client() {
     # backup was deleted.
     if ! grep -q -E "^${param} = .+" "$cf"; then
         log_error "Replacement failed for '$param'. Restoring..."
-        if cp "$bak" "$cf"; then rm -f "$bak"; else log_warn "Restore error."; fi
+        if cp "$bak" "$cf"; then
+            rm -f "$bak"
+            log_warn "QR and vpn:// files of client '$name' may have been removed before the edit - fix the cause and repeat modify, it rebuilds them."
+            _JSON_ERR="edit rolled back, the .conf is restored; repeat modify to rebuild QR and vpn://"
+        else
+            log_error "Could not restore $cf from $bak - the backup is kept, put it back by hand."
+            _JSON_ERR="edit failed and the .conf was not restored; backup: $bak"
+        fi
         exec {modify_lock_fd}>&-
         return 1
     fi
@@ -1188,11 +1250,11 @@ modify_client() {
     rm -f "$bak"
 
     log "Regenerating QR code and vpn:// URI..."
-    generate_qr "$name" || log_warn "Failed to update QR code."
+    generate_qr "$name" || log_warn "Failed to update QR code - ${name}.png is now missing."
     if generate_vpn_uri "$name"; then
-        generate_qr_vpnuri "$name" || log_warn "Failed to update vpn:// QR."
+        generate_qr_vpnuri "$name" || log_warn "Failed to update vpn:// QR - ${name}.vpnuri.png is now missing."
     else
-        log_warn "Failed to update vpn:// URI."
+        log_warn "Failed to update vpn:// URI - ${name}.vpnuri and ${name}.vpnuri.png are now missing."
     fi
 
     exec {modify_lock_fd}>&-
@@ -1366,7 +1428,8 @@ check_server() {
 
 # Known carriers and recommended AWG params.
 # Format: jc_min jc_max jmin_lo jmin_hi jmax_offset_lo jmax_offset_hi i1_mode
-#   i1_mode: random ("<r N>" form), absent (no I1), binary ("<r N><b 0xHEX>" form)
+#   i1_mode: random (a random "<r N>" OR a shaped packet - see the random branch
+#           below), absent (no I1), binary ("<r N><b 0xHEX>" form)
 # Source: ADVANCED.en.md operator matrix (only confirmed ✅ rows).
 # Megafon Moscow in the table is still 🔄 testing (Jc=3, Jmin=80, Jmax=268) -
 # the range is wider than mobile preset; will add once the operator is
@@ -1431,7 +1494,7 @@ _diag_cps_guard() {
         # roughly 3.5 KB, but the exact boundary depends on the interface name
         # length, on whether a header protection key is set, and on each peer's
         # address family, so we cannot compute it here. Our generator produces
-        # at most 256 bytes and the documented recipes up to 128, so a kilobyte
+        # at most 128 bytes (256 before September 2026) and the documented recipes the same, so a kilobyte
         # already means a hand edit, with a multiple of headroom left.
         if [[ "$_cps_total" =~ ^[0-9]+$ && "$_cps_total" -gt 1024 ]]; then
             _cps_unsafe=1
@@ -1714,6 +1777,25 @@ diagnose_server() {
             random)
                 if [[ -n "$i1" && "$i1" =~ ^\<r\ [0-9]+\>$ ]]; then
                     _diag_line OK "I1 random ($i1) - suitable for $carrier"; ok=$((ok+1))
+                elif awg_cps_is_shaped "$i1"; then
+                    # 🔴 Do not scold our own default. Since September 2026 the
+                    # installer writes a DNS-reply-shaped I1, and a carrier
+                    # profile built on the `<r N>` form confirms that form
+                    # without claiming the converse. The previous wording swept
+                    # every structured packet into "unusual format" and pushed
+                    # the user back towards random bytes - exactly what was
+                    # measured as not working on MTS.
+                    #
+                    # What counts as structure is decided by awg_cps_is_shaped,
+                    # and its boundaries are explained there. What matters here
+                    # is why the check moved into the shared library: the first
+                    # two versions of this condition were written inline and both
+                    # turned out too wide (a `<b 0x...>` substring, then an
+                    # anchor that still let `<r 99>` and the non-portable `<c>`
+                    # through). One check in one place, and it can be exercised
+                    # directly.
+                    _diag_line OK "I1 structured ($i1)"; ok=$((ok+1))
+                    echo "        The $carrier profile is confirmed on the <r N> form; a structured packet was not measured on it separately. On MTS (Moscow) a packet of this shape got through where a random one never did."
                 elif [[ -z "$i1" ]]; then
                     _diag_line WARN "I1 missing, $carrier usually works with random I1 (<r N>)"
                     warn=$((warn+1))
@@ -2561,10 +2643,17 @@ case $COMMAND in
         [[ -z "$CLIENT_NAME" ]] && die "Client name not specified."
         validate_client_name "$CLIENT_NAME" || { _JSON_ERR="invalid client name"; exit 1; }
         if modify_client "$CLIENT_NAME" "$PARAM" "$VALUE"; then
-            # modify edits ONLY the client config (DNS/MTU/AllowedIPs/...):
+            # modify edits ONLY the client config (DNS/Endpoint/AllowedIPs/PersistentKeepalive):
             # server state does not change, no apply needed - the envelope has
             # no applied field on purpose (symmetry with regen).
-            json_out "{\"command\":\"modify\",\"ok\":true,\"name\":\"$(json_escape "$CLIENT_NAME")\",\"param\":\"$(json_escape "$PARAM")\",\"value\":\"$(json_escape "$VALUE")\"}"
+            # qr/vpnuri - as in add: a path if the file exists at response time.
+            # modify removes the previous copies before the .conf edit, so a path
+            # leads to a file built in this run (unless a parallel operation
+            # touched the same client), and null means there is no current file.
+            _jqr="null"; _juri="null"
+            [[ -f "$AWG_DIR/${CLIENT_NAME}.png" ]] && _jqr="\"$(json_escape "$AWG_DIR/${CLIENT_NAME}.png")\""
+            [[ -f "$AWG_DIR/${CLIENT_NAME}.vpnuri" ]] && _juri="\"$(json_escape "$AWG_DIR/${CLIENT_NAME}.vpnuri")\""
+            json_out "{\"command\":\"modify\",\"ok\":true,\"name\":\"$(json_escape "$CLIENT_NAME")\",\"param\":\"$(json_escape "$PARAM")\",\"value\":\"$(json_escape "$VALUE")\",\"qr\":$_jqr,\"vpnuri\":$_juri}"
         else
             _cmd_rc=1
         fi
