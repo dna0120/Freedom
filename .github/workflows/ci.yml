@@ -3,12 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
-  pull_request:
 
 jobs:
   shell:
-    # Regular CI skips auto/upstream-sync PRs (see upstream-pr-ci.yml).
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.ref != 'auto/upstream-sync'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -33,7 +30,7 @@ jobs:
 
       - name: Verify SHA256 pins
         env:
-          SKIP_RAW_VERIFY: ${{ github.event_name == 'pull_request' && '1' || '0' }}
+          SKIP_RAW_VERIFY: "0"
         run: bash tools/verify_sha_pins.sh
 
   dispatch-upstream-pr-ci:
