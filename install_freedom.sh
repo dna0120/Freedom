@@ -214,8 +214,38 @@ log_debug() { if [[ "$VERBOSE" -eq 1 ]]; then log_msg "DEBUG" "$1"; fi; }
 die()       { log_error "CRITICAL ERROR: $1"; log_error "Installation aborted. Log: $LOG_FILE"; exit 1; }
 
 random_udp_port() {
-    # Ephemeral/private port range (49152-65535)
-    echo $(( (RANDOM % 16384) + 49152 ))
+    # Any 5-digit UDP port (10000-65535), uniform across the whole range.
+    # $RANDOM caps at 32767, so /dev/urandom covers the full 55536-wide span.
+    local n
+    if ! n=$(od -An -tu4 -N4 /dev/urandom 2>/dev/null | tr -d ' ') || [[ ! "$n" =~ ^[0-9]+$ ]]; then
+        # Fallback: three $RANDOM (15 bits each) XORed cover bits 0-30.
+        n=$(( (RANDOM << 16) ^ (RANDOM << 8) ^ RANDOM ))
+    fi
+    echo $(( (n % 55536) + 10000 ))
+}
+
+udp_port_free() {
+    local port="$1"
+    [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] || return 1
+    (( port <= 65535 )) || return 1
+    # Without ss (iproute2) there is nothing to check against yet.
+    command -v ss >/dev/null 2>&1 || return 0
+    if ss -lun 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${port}$"; then
+        return 1
+    fi
+    return 0
+}
+
+pick_free_udp_port() {
+    local p i
+    for i in $(seq 1 40); do
+        p="$(random_udp_port)"
+        if udp_port_free "$p"; then
+            echo "$p"
+            return 0
+        fi
+    done
+    return 1
 }
 
 bbr_is_enabled() {
@@ -2999,10 +3029,13 @@ initialize_setup() {
     local default_subnet="10.66.66.1/24"
     local config_exists=0
 
-    # First install: pick a random default port unless user set --port.
+    # First install: pick a random FREE default port unless user set --port.
     # Re-runs keep the saved value from CONFIG_FILE.
     if [[ ! -f "$CONFIG_FILE" && -z "${CLI_PORT:-}" ]]; then
-        default_port="$(random_udp_port)"
+        if ! default_port="$(pick_free_udp_port)"; then
+            default_port="$(random_udp_port)"
+            log_warn "No free UDP port found after 40 tries — using $default_port (re-checked in step 4)."
+        fi
     fi
 
     # Variable initialization
