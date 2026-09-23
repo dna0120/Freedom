@@ -3,8 +3,8 @@
 # ==============================================================================
 # Shared function library for AmneziaWG 2.0
 # Author: @dna0120
-# Version: 5.35.0
-# Date: 2026-09-17
+# Version: 5.36.0
+# Date: 2026-09-23
 # Repository: https://github.com/dna0120/Freedom
 # ==============================================================================
 #
@@ -24,7 +24,7 @@ KEYS_DIR="${KEYS_DIR:-$AWG_DIR/keys}"
 # drifted apart (one file updated, the other not) - otherwise the mismatch shows
 # up as a "command not found" somewhere random. Bumped with the other versions.
 # shellcheck disable=SC2034  # used by the manage script after sourcing
-AWG_COMMON_VERSION="5.35.0"
+AWG_COMMON_VERSION="5.36.0"
 
 # --- Auto-cleanup of temporary files ---
 # NOTE: trap is NOT set here to avoid overwriting the caller's trap handler.
@@ -1064,9 +1064,16 @@ safe_load_config() {
 # did not match when the first carried a BOM, so a duplicate passed as a single
 # marker.
 # 🔴 grep's exit codes are not interchangeable: 1 means no match (normal), 2 and
-# above mean grep itself failed (unreadable file, a directory in place of a
-# file). The former '|| n=0' form equated them and turned a failure into "no
+# above mean grep itself failed (a regular file that cannot be read). The
+# former '|| n=0' form equated them and turned a failure into "no
 # marker", that is, into a confident 2.0. A read error now refuses as well.
+# 🔴 grep only ever gets a regular file (-f): on a FIFO it would wait for a
+# writer forever, on /dev/zero it would read without end. A missing path and a
+# non-regular file in place of the init never reach grep and read as "no
+# marker", so the -f check must stay. In manage the live init of that kind never reaches
+# the function: check_dependencies refuses it earlier. The installer treats it as
+# absent at step 0 and calls the function with the same path; the -f check is
+# what gives it 2.0 instead of a hang.
 awg_installed_protocol() {
     local cfg="${1:-}" n=0 _rc=0 _bom=$'\xef\xbb\xbf'
     if [[ -n "$cfg" && -f "$cfg" ]]; then
@@ -1542,15 +1549,18 @@ _ensure_server_public_key() {
 # _mask_report_secrets : the secrets filter for everything that goes to the screen
 # or the log from awg show and configs. A copy of the installer's filter: there it
 # has to work without the downloaded library (--diagnostic), here it serves manage
-# check, show and diagnose. The body is the same in all four copies, and a parity
-# test checks that; the rules and the four upstream string literals are explained
+# check, show, diagnose and the service status text in check and on a failed restore or restart. The body is the same in all four copies, and a parity
+# test checks that; the rules and the five upstream string literals are explained
 # in the installer's comment.
 _mask_report_secrets() {
     sed -E \
         -e 's/^([[:space:]]*#?[[:space:]]*(PrivateKey|PresharedKey|HeaderProtectionKey)[[:space:]]*=[[:space:]]*).*/\1[HIDDEN]/I' \
         -e 's/^([[:space:]]*(private key|preshared key|header protection key)[[:space:]]*:[[:space:]]*).*/\1(hidden)/I' \
-        -e 's/(Line unrecognized:[[:space:]]*.?(PrivateKey|PresharedKey|HeaderProtectionKey)[[:space:]]*=[[:space:]]*).*/\1[HIDDEN]/I' \
-        -e 's/(Key is not the correct length or format:[[:space:]]*).*/\1[HIDDEN]/I'
+        -e 's/(Line unrecognized:[[:space:]]*.?(PrivateKey|PresharedKey|HeaderProtectionKey|PublicKey|ListenPort|FwMark|Jc|Jmin|Jmax|S[1-4]|H[1-4]|I[1-5]|ContentPaddingAddition|RekeyAfterTime|RekeyTimeout|RejectAfterTime|KeepaliveTimeout|MaxHandshakeAttempts|RandomTrailers|DisableCookies|Endpoint|AllowedIPs|PersistentKeepalive|AdvancedSecurity)[[:space:]]*=[[:space:]]*).*/\1[HIDDEN]/I' \
+        -e '/\[HIDDEN\]/!s/(Line unrecognized:[[:space:]]*).*/\1[HIDDEN]/I' \
+        -e 's/(Key is not the correct length or format:[[:space:]]*).*/\1[HIDDEN]/I' \
+        -e "s|(Unable to parse IP address:[[:space:]]*\`)[^.:']*'|\1[HIDDEN]'|I" \
+        -e "s|\`[A-Za-z0-9+/]{20,}={0,2}'|\`[HIDDEN]'|g"
 }
 
 # awg_hpk_path : path to the header protection key (HeaderProtectionKey) file.
@@ -2928,12 +2938,13 @@ awg_cps_refuse_unsafe() {
 }
 
 
-# _awg_device_param_names : names of the AWG device parameters (2.0 and 3.0)
+# _awg_device_param_names : names of the AWG device parameters (2.0, 3.0 and 3.1)
 # that live in the [Interface] section and that syncconf does NOT clear.
 _awg_device_param_names() {
     printf '%s\n' Jc Jmin Jmax S1 S2 S3 S4 H1 H2 H3 H4 I1 I2 I3 I4 I5 \
         ContentPaddingAddition HeaderProtectionKey MaxHandshakeAttempts \
-        KeepaliveTimeout RejectAfterTime RekeyAfterTime RekeyTimeout
+        KeepaliveTimeout RejectAfterTime RekeyAfterTime RekeyTimeout \
+        RandomTrailers DisableCookies
 }
 
 # _awg_device_params_fingerprint [config] : sorted list of device parameter
@@ -4840,7 +4851,7 @@ check_expired_clients() {
             log_warn "Expiry marker for '$name' was not read (status $_exp_rc) - leaving the client alone."
             continue
         fi
-        # A canonical decimal of at most 10 digits - the same form list_clients
+        # A canonical decimal of at most 15 digits - the same form list_clients
         # uses, and the two must not diverge. The previous ^[0-9]+$ accepted a
         # leading zero, and the comparison below reads such a value as OCTAL:
         # the marker 01750000000 became 262144000, that is 1978, the condition
