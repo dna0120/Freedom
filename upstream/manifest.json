@@ -6,7 +6,7 @@
       "name": "AmneziaWG installer (bivlked)",
       "repo": "bivlked/amneziawg-installer",
       "pinned_tag": "v5.36.2",
-      "latest_observed": "v5.36.2",
+      "latest_observed": "v5.37.0",
       "track": "releases",
       "files": [
         "awg_common_en.sh",
