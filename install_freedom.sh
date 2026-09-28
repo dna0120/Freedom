@@ -8,7 +8,7 @@ fi
 # ==============================================================================
 # AmneziaWG 2.0 installation and configuration script for Ubuntu/Debian servers
 # Author: @dna0120
-# Version: 5.31.0
+# Version: 5.37.0
 # Date: 2026-09-02
 # Repository: https://github.com/dna0120/Freedom
 # Quick install:
@@ -17,10 +17,10 @@ fi
 
 # --- Safe mode and Constants ---
 set -o pipefail
-SCRIPT_VERSION="5.36.2"
+SCRIPT_VERSION="5.37.0"
 # Freedom's own release counter; SCRIPT_VERSION tracks the AmneziaWG upstream.
-FREEDOM_VERSION="1.3.12"
-UPSTREAM_AWG_PIN="v5.36.2"
+FREEDOM_VERSION="1.3.13"
+UPSTREAM_AWG_PIN="v5.37.0"
 UPSTREAM_AWG_REPO="bivlked/amneziawg-installer"
 
 FREEDOM_REF="${FREEDOM_REF:-main}"
@@ -62,8 +62,8 @@ HY2_MANAGE_SCRIPT_PATH="$HY2_DIR/manage_hysteria.sh"
 # SHA256 checksums of downloaded scripts. Updated at each release.
 # Verified in step5_download_scripts() after curl.
 # Format: sha256sum output (hex, 64 chars).
-COMMON_SCRIPT_SHA256="f93d9b05c0e8514d7444c68ccef9511e9b395fe32a63df5e990836c4b11dec33"
-MANAGE_SCRIPT_SHA256="2cd6f82dbfb1c50841b6f099683c647b48d8b8c36757fa7b91e5e47160470edc"
+COMMON_SCRIPT_SHA256="28ee8b5cc01486e8ea5cf99f48688ad50314e84e882aff9ac27df9e75bd00f0c"
+MANAGE_SCRIPT_SHA256="5dbaed08ca45a0dc49484d8f552a2c8e671ac9d03377483fcf73737136aaf70a"
 XRAY_COMMON_SCRIPT_SHA256="4cdc71cc701bfb230c4f041041fd9d7f42281c1dfcb4828491ee27127574a2f5"
 XRAY_MANAGE_SCRIPT_SHA256="880d35faffb67b1f55538d8eb613afa4cd2a37780a426544ec35a314d14e6bf2"
 HY2_COMMON_SCRIPT_SHA256="1584a48d798e38f88d0b9f5bf0226cbba329f40b9ce0c4296b7f5ee6dfe6a7a8"

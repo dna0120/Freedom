@@ -3,8 +3,8 @@
 # ==============================================================================
 # Shared function library for AmneziaWG 2.0
 # Author: @dna0120
-# Version: 5.36.2
-# Date: 2026-09-26
+# Version: 5.37.0
+# Date: 2026-09-28
 # Repository: https://github.com/dna0120/Freedom
 # ==============================================================================
 #
@@ -24,7 +24,7 @@ KEYS_DIR="${KEYS_DIR:-$AWG_DIR/keys}"
 # drifted apart (one file updated, the other not) - otherwise the mismatch shows
 # up as a "command not found" somewhere random. Bumped with the other versions.
 # shellcheck disable=SC2034  # used by the manage script after sourcing
-AWG_COMMON_VERSION="5.36.2"
+AWG_COMMON_VERSION="5.37.0"
 
 # --- Auto-cleanup of temporary files ---
 # NOTE: trap is NOT set here to avoid overwriting the caller's trap handler.
@@ -385,6 +385,17 @@ _is_v6_sink_addr() {
     [[ -n "$a" && "$a" == "${AWG_V6_SINK_PREFIX}:"* ]]
 }
 
+# _ipv6_subnet_hits_sink <IPV6_SUBNET> : addresses from this subnet would fall
+# into the sink prefix. A client address is built as "prefix::N", and a sink is
+# recognised by text, case-insensitively (_is_v6_sink_addr), so the check is
+# textual too: regen and modify would take a client's real IPv6 from such a
+# subnet for a sink.
+_ipv6_subnet_hits_sink() {
+    local p="${1%%::*}"
+    p="${p,,}"
+    [[ "$p" == "$AWG_V6_SINK_PREFIX" || "$p" == "${AWG_V6_SINK_PREFIX}:"* ]]
+}
+
 # _aip_tokens <list> : the AllowedIPs elements one per line, without spaces.
 # Newline and comma separate elements, a carriage return is not meaningful.
 _aip_tokens() {
@@ -432,7 +443,7 @@ _aip_wants_v6_sink() {
 #     render_client_config adds the sink address (see AWG_V6_SINK_PREFIX).
 # A list that already has an IPv6 part is untouched: an explicit ::/0 from
 # --allowed-ips is the user's choice. Our own earlier ::/0 on a mode-2 list
-# (v5.31.0-v5.36.x) is replaced by regen via _aip_migrate_legacy_v6: only regen
+# (v5.31.0-v5.36.1) is replaced by regen via _aip_migrate_legacy_v6: only regen
 # knows where the list came from.
 #
 # Idempotence is mandatory: regen runs repeatedly, including over a dual-stack
@@ -465,7 +476,7 @@ _append_ipv6_full_tunnel_route() {
 
 # _aip_migrate_legacy_v6 <client list> <server list> : prints the list with our
 # earlier ::/0 replaced by 2000::/3, otherwise the list unchanged.
-# v5.31.0-v5.36.x appended a bare ::/0 to the mode-2 list, and on Windows it
+# v5.31.0-v5.36.1 appended a bare ::/0 to the mode-2 list, and on Windows it
 # cuts off the local network. ONLY what we wrote is replaced: the IPv4 part
 # matches the server's global list (as a set of routes), the IPv6 part is
 # exactly ::/0, and that list is a full tunnel without 0.0.0.0/0. A full tunnel
@@ -1181,6 +1192,10 @@ ensure_amneziawg_kernel_module() {
 # Parses only allowed keys in KEY=VALUE or export KEY=VALUE format
 safe_load_config() {
     local config_file="${1:-$CONFIG_FILE}"
+    # CLIENT_DNS lives only in the file: without this reset a variable from root's
+    # environment (CLIENT_DNS=... manage add) would silently reach new clients on
+    # installs whose file has no such line yet.
+    unset CLIENT_DNS
     if [[ ! -f "$config_file" ]]; then return 1; fi
 
     local line key value first_line=1
@@ -1211,7 +1226,14 @@ safe_load_config() {
                 AWG_APPLY_MODE|ALLOW_IPV6_TUNNEL|IPV6_SUBNET|SERVER_HAS_NATIVE_IPV6|PREV_AWG_PORT|CLIENT_ISOLATION|CLIENT_ISOLATION_NET|AWG_PROTOCOL|AWG_CPA|AWG_SERVER_NAME|ENABLE_BBR|CLIENT_DNS_1|CLIENT_DNS_2)
                     export "$key=$value"
                     ;;
+                *)
+                    # A CLIENT_DNS line the parser did not recognise is named: otherwise
+                    # new clients would silently get the default DNS.
+                    if [[ "${key^^}" == CLIENT_DNS ]]; then log_warn "CLIENT_DNS line in $config_file not parsed: '$line'. Use the form export CLIENT_DNS='10.9.9.1' with no indent and no spaces around =. New clients will get the default DNS."; fi
+                    ;;
             esac
+        elif [[ "${line^^}" == *CLIENT_DNS* ]]; then
+            log_warn "CLIENT_DNS line in $config_file not parsed: '$line'. Use the form export CLIENT_DNS='10.9.9.1' with no indent and no spaces around =. New clients will get the default DNS."
         fi
     done < "$config_file"
 }
@@ -1445,7 +1467,11 @@ _load_awg_params_from_server_conf_body() {
 load_awg_params() {
     # 1. Base settings from init (always, for non-AWG keys)
     if [[ -f "$CONFIG_FILE" ]]; then
+        # An apply mode set before the call (--apply-mode or the environment)
+        # wins over the one saved in init: otherwise init would override it.
+        local _apply_mode_keep="${AWG_APPLY_MODE:-}"
         safe_load_config "$CONFIG_FILE" || log_warn "Failed to load $CONFIG_FILE"
+        [[ -z "$_apply_mode_keep" ]] || export AWG_APPLY_MODE="$_apply_mode_keep"
     fi
 
     # Where the AWG parameters come from: the I1-I5 refusal names this file as
@@ -2408,6 +2434,56 @@ awg_validate_allowed_ips_list() {
     return 0
 }
 
+# Validate a DNS list for a client config: IPv4/IPv6 only, comma-separated, no
+# host names, no empty items. One place for `manage modify DNS` and for CLIENT_DNS
+# from awgsetup_cfg.init (two inline copies drift, see the AllowedIPs note above).
+# Parsed with read -a, not `for x in $value`: the old loop in modify expanded globs,
+# so "1.1.1.*" passed whenever a file named 1.1.1.1 sat in the current directory.
+awg_validate_dns_list() {
+    local value="$1" tok
+    local -a parts
+    case "$value" in
+        *$'\n'*|*$'\r'*|*\\*|*\"*|*\'*|"")
+            log_error "Invalid DNS: '$value'"
+            return 1 ;;
+    esac
+    case "$value" in
+        ,*|*,|*,,*)
+            log_error "Invalid DNS '$value': empty list element (stray comma)"
+            return 1 ;;
+    esac
+    IFS=',' read -r -a parts <<< "$value"
+    for tok in "${parts[@]}"; do
+        tok="${tok//[[:space:]]/}"
+        if [[ -z "$tok" ]]; then
+            log_error "Invalid DNS '$value': empty list element (stray comma)"
+            return 1
+        fi
+        if ! _valid_ipv4 "$tok" && ! _valid_ipv6 "$tok"; then
+            log_error "Invalid DNS '$value': '$tok' is not a valid IPv4/IPv6 address"
+            return 1
+        fi
+    done
+    return 0
+}
+
+# DNS for a NEW client config: CLIENT_DNS from awgsetup_cfg.init, otherwise the
+# old "1.1.1.1, 1.0.0.1". An invalid value fails loudly instead of silently falling
+# back: someone who wrote in their own resolver would otherwise get clients on
+# Cloudflare and never know. Existing clients are not affected: regen keeps their
+# DNS from the current .conf.
+awg_client_dns() {
+    if [[ -z "${CLIENT_DNS:-}" ]]; then
+        printf '%s' "1.1.1.1, 1.0.0.1"
+        return 0
+    fi
+    if ! awg_validate_dns_list "$CLIENT_DNS"; then
+        log_error "CLIENT_DNS in $CONFIG_FILE is invalid ('$CLIENT_DNS'). Fix the value (IPs separated by commas) or remove the line to get 1.1.1.1, 1.0.0.1."
+        return 1
+    fi
+    awg_normalize_csv "$CLIENT_DNS"
+}
+
 # Acceptable MTU range for AWG / WireGuard.
 # Lower bound 576 (classic IPv4 minimum), upper bound 9100 (just under jumbo).
 # Values outside the range are treated as invalid and dropped (fallback to 1420).
@@ -2461,8 +2537,27 @@ render_client_config() {
     local endpoint="$5"
     local port="$6"
     local client_ipv6="${7:-}"
+    # The 8th argument is a live client's DNS from regenerate_client. An argument, not a
+    # variable: a variable can be inherited from the environment and skip the CLIENT_DNS check.
+    local keep_dns="${8:-}"
 
     load_awg_params || return 1
+
+    # DNS of the new client: CLIENT_DNS or the default. Computed BEFORE the tmpfile,
+    # so an invalid CLIENT_DNS never leaves a half-written config behind.
+    # regenerate_client with a live .conf passes the client's DNS as the 8th argument:
+    # CLIENT_DNS is then not needed and not checked, so a typo in it cannot block
+    # regen of clients it does not concern.
+    local client_dns
+    if [[ -n "$keep_dns" ]]; then
+        client_dns="$keep_dns"
+    else
+        if [[ -n "${CLIENT_DNS_1:-}" ]]; then
+            client_dns="${CLIENT_DNS_1}, ${CLIENT_DNS_2:-$CLIENT_DNS_1}"
+        else
+            client_dns="1.1.1.1, 1.0.0.1"
+        fi
+    fi
 
     local conf_file="$AWG_DIR/${name}.conf"
     # Route base: the client's own override (CLIENT_ALLOWED_IPS, Issue #253)
@@ -2546,13 +2641,6 @@ render_client_config() {
         else
             mtu=1420
         fi
-    fi
-
-    local client_dns
-    if [[ -n "${CLIENT_DNS_1:-}" ]]; then
-        client_dns="${CLIENT_DNS_1}, ${CLIENT_DNS_2:-$CLIENT_DNS_1}"
-    else
-        client_dns="1.1.1.1, 1.0.0.1"
     fi
 
     # temp in the client config dir ($AWG_DIR) -> mv = atomic rename.
@@ -2913,15 +3001,21 @@ awg_cps_decoded_size() {
 #
 # Returns 0 when the structure is there.
 awg_cps_is_shaped() {
-    local s="${1:-}" rest tag n lit=0 rnd_max=0
+    local s="${1:-}" rest mat tag n lit=0 rnd_max=0
     [[ -n "$s" ]] || return 1
-    # Разбирается целиком: код 2 означает «встретилось неразобранное», и такой
-    # тег обе реализации отвергнут - интерфейс не поднимется.
+    # Parsed as a whole: code 2 means "something unparsed was found", and both
+    # implementations reject such a tag - the interface will not come up.
     awg_cps_decoded_size "$s" >/dev/null 2>&1 || return 1
     rest="$s"
     while [[ "$rest" =~ \<[[:space:]]*([a-zA-Z]+)[[:space:]]*([^\>]*)\> ]]; do
+        # Save the match and advance the string BEFORE the case: the `[[ =~ ]]`
+        # in the r/rc/rd branch clobbers BASH_REMATCH, and advancing by a
+        # clobbered match did not shorten the string. On `<r 1 0>` the loop
+        # then never ended and diagnose hung.
+        mat="${BASH_REMATCH[0]}"
         tag="${BASH_REMATCH[1],,}"
         n="${BASH_REMATCH[2]//[[:space:]]/}"
+        rest="${rest#*"$mat"}"
         case "$tag" in
             b)
                 n="${n#0x}"; n="${n#0X}"
@@ -2934,10 +3028,9 @@ awg_cps_is_shaped() {
             t) : ;;
             *) return 1 ;;
         esac
-        rest="${rest#*"${BASH_REMATCH[0]}"}"
     done
-    # Ни одного случайного куска длиннее метки DNS и не меньше тридцати
-    # литеральных байт структуры.
+    # No random run longer than a DNS label, and at least thirty literal bytes
+    # of structure.
     [[ "$rnd_max" -le 63 && "$lit" -ge 30 ]]
 }
 
@@ -3267,6 +3360,22 @@ apply_config() {
         fi
     fi
 
+    # No mode from an option or the environment (remove and cron do not load
+    # init) - take the one saved in init with the same parser load_awg_params
+    # uses. It runs in a subshell, so the other init keys do not leak in here.
+    local AWG_APPLY_MODE="${AWG_APPLY_MODE:-}"
+    if [[ -z "$AWG_APPLY_MODE" && -f "$CONFIG_FILE" ]]; then
+        AWG_APPLY_MODE=$(safe_load_config "$CONFIG_FILE" >/dev/null 2>&1; printf '%s' "${AWG_APPLY_MODE:-}")
+    fi
+    # An unknown value (a typo like Restart in init or the environment) still
+    # gives syncconf, but it is named: otherwise the workaround restart was
+    # chosen for would be lost without a word.
+    case "${AWG_APPLY_MODE:-}" in
+        ""|syncconf|restart) ;;
+        *)
+            log_warn "Unknown AWG_APPLY_MODE='$AWG_APPLY_MODE' (use syncconf or restart) - applying with syncconf."
+            ;;
+    esac
     if [[ "${AWG_APPLY_MODE:-syncconf}" == "restart" ]]; then
         # An explicit restart mode drops client connections, SSH through the
         # tunnel included, so warn exactly as manage restart does.
@@ -3417,6 +3526,10 @@ get_next_client_ipv6() {
     local subnet="${IPV6_SUBNET:-fddd:2c4:2c4:2c4::/64}"
     local prefix="${subnet%%::*}"
     [[ "$prefix" == *:* ]] || { log_error "get_next_client_ipv6: IPV6_SUBNET does not contain :: (value: $subnet)"; return 1; }
+    if _ipv6_subnet_hits_sink "$subnet"; then
+        log_error "get_next_client_ipv6: IPV6_SUBNET ($subnet) overlaps the sink prefix ${AWG_V6_SINK_PREFIX}::/64 - choose another ULA subnet."
+        return 1
+    fi
     echo "${prefix}::${suffix}"
     return 0
 }
@@ -4458,7 +4571,10 @@ regenerate_client() {
     fi
 
     # Preserve user settings from current .conf (modified via modify command)
-    local current_dns="1.1.1.1, 1.0.0.1" current_keepalive="33" current_allowed_ips="${ALLOWED_IPS:-0.0.0.0/0}"
+    # current_dns stays empty without an old .conf: the DNS in the config is then the
+    # one render_client_config wrote (CLIENT_DNS or the default), and overwriting it
+    # with a hardcoded constant is wrong - that is how CLIENT_DNS got lost on restore.
+    local current_dns="" current_keepalive="33" current_allowed_ips="${ALLOWED_IPS:-0.0.0.0/0}"
     local _had_conf=0
     if [[ -f "$AWG_DIR/${name}.conf" ]]; then
         _had_conf=1
@@ -4527,8 +4643,11 @@ regenerate_client() {
         return 1
     fi
 
-    # Config regeneration (pass client_ipv6 if dual-stack)
-    render_client_config "$name" "$client_ip" "$client_privkey" "$server_pubkey" "$endpoint" "$_cport" "$client_ipv6" || {
+    # Config regeneration (pass client_ipv6 if dual-stack). A live client's DNS goes
+    # to render directly (8th argument): it is restored below anyway.
+    local _keep_dns=""
+    [[ "$_had_conf" -eq 1 && -n "$current_dns" ]] && _keep_dns="$current_dns"
+    render_client_config "$name" "$client_ip" "$client_privkey" "$server_pubkey" "$endpoint" "$_cport" "$client_ipv6" "$_keep_dns" || {
         exec {lock_fd}>&-
         unset CLIENT_PSK
         return 1
@@ -4548,7 +4667,7 @@ regenerate_client() {
     # re-issue that had already succeeded.
     if [[ "${AWG_REGEN_RESET_ROUTES:-0}" != "1" && "$_had_conf" -eq 1 ]]; then
         local _aip_new
-        # Our earlier ::/0 on a mode-2 list (v5.31.0-v5.36.x) cuts off the local
+        # Our earlier ::/0 on a mode-2 list (v5.31.0-v5.36.1) cuts off the local
         # network on Windows; a plain regen has to deliver the replacement. For a
         # dual-stack client ::/0 is its own scheme and stays.
         if [[ -z "$client_ipv6" ]]; then
@@ -4606,7 +4725,9 @@ regenerate_client() {
         fi
         current_allowed_ips="$_aip_new"
     fi
-    [[ "$current_dns" == "1.1.1.1" ]] && current_dns="1.1.1.1, 1.0.0.1"
+    # A lone 1.1.1.1 from older versions becomes the pair, but not when it is a
+    # deliberate choice through CLIENT_DNS='1.1.1.1'.
+    [[ "$current_dns" == "1.1.1.1" && "$(awg_normalize_csv "${CLIENT_DNS:-}")" != "1.1.1.1" ]] && current_dns="1.1.1.1, 1.0.0.1"
 
     # Restore user settings (escape & and \ for sed replacement)
     local _dns _ka _aip
@@ -4614,11 +4735,13 @@ regenerate_client() {
     _ka=$(printf '%s' "$current_keepalive" | sed 's/[&\\/]/\\&/g')
     _aip=$(printf '%s' "$current_allowed_ips" | sed 's/[&\\/]/\\&/g')
     local _client_conf="$AWG_DIR/${name}.conf"
-    if ! sed -i "s/^DNS = .*/DNS = ${_dns}/" "$_client_conf"; then
-        log_error "sed error writing DNS to $_client_conf"
-        exec {lock_fd}>&-
-        unset CLIENT_PSK
-        return 1
+    if [[ -n "$current_dns" ]]; then
+        if ! sed -i "s/^DNS = .*/DNS = ${_dns}/" "$_client_conf"; then
+            log_error "sed error writing DNS to $_client_conf"
+            exec {lock_fd}>&-
+            unset CLIENT_PSK
+            return 1
+        fi
     fi
     if ! sed -i "s/^PersistentKeepalive = .*/PersistentKeepalive = ${_ka}/" "$_client_conf"; then
         log_error "sed error writing PersistentKeepalive to $_client_conf"

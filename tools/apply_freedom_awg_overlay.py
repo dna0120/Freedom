@@ -136,34 +136,27 @@ RULES: list[tuple[str, str, str | tuple[str, ...], str | tuple[str, ...]]] = [
             "AWG_APPLY_MODE|ALLOW_IPV6_TUNNEL|IPV6_SUBNET|SERVER_HAS_NATIVE_IPV6|PREV_AWG_PORT|CLIENT_ISOLATION|CLIENT_ISOLATION_NET|AWG_SERVER_NAME)",
             "AWG_APPLY_MODE|ALLOW_IPV6_TUNNEL|IPV6_SUBNET|SERVER_HAS_NATIVE_IPV6|PREV_AWG_PORT|CLIENT_ISOLATION|CLIENT_ISOLATION_NET|AWG_PROTOCOL|AWG_SERVER_NAME)",
             "AWG_APPLY_MODE|ALLOW_IPV6_TUNNEL|IPV6_SUBNET|SERVER_HAS_NATIVE_IPV6|PREV_AWG_PORT|CLIENT_ISOLATION|CLIENT_ISOLATION_NET|AWG_PROTOCOL|AWG_CPA|AWG_SERVER_NAME)",
+            "AWG_APPLY_MODE|ALLOW_IPV6_TUNNEL|IPV6_SUBNET|SERVER_HAS_NATIVE_IPV6|PREV_AWG_PORT|CLIENT_ISOLATION|CLIENT_ISOLATION_NET|AWG_PROTOCOL|AWG_CPA|AWG_SERVER_NAME|CLIENT_DNS)",
         ),
         (
             "AWG_APPLY_MODE|ALLOW_IPV6_TUNNEL|IPV6_SUBNET|SERVER_HAS_NATIVE_IPV6|PREV_AWG_PORT|CLIENT_ISOLATION|CLIENT_ISOLATION_NET|AWG_SERVER_NAME|ENABLE_BBR|CLIENT_DNS_1|CLIENT_DNS_2)",
             "AWG_APPLY_MODE|ALLOW_IPV6_TUNNEL|IPV6_SUBNET|SERVER_HAS_NATIVE_IPV6|PREV_AWG_PORT|CLIENT_ISOLATION|CLIENT_ISOLATION_NET|AWG_PROTOCOL|AWG_SERVER_NAME|ENABLE_BBR|CLIENT_DNS_1|CLIENT_DNS_2)",
             "AWG_APPLY_MODE|ALLOW_IPV6_TUNNEL|IPV6_SUBNET|SERVER_HAS_NATIVE_IPV6|PREV_AWG_PORT|CLIENT_ISOLATION|CLIENT_ISOLATION_NET|AWG_PROTOCOL|AWG_CPA|AWG_SERVER_NAME|ENABLE_BBR|CLIENT_DNS_1|CLIENT_DNS_2)",
+            "AWG_APPLY_MODE|ALLOW_IPV6_TUNNEL|IPV6_SUBNET|SERVER_HAS_NATIVE_IPV6|PREV_AWG_PORT|CLIENT_ISOLATION|CLIENT_ISOLATION_NET|AWG_PROTOCOL|AWG_CPA|AWG_SERVER_NAME|ENABLE_BBR|CLIENT_DNS_1|CLIENT_DNS_2)",
         ),
     ),
     (
         "awg_common.sh",
-        "resolve client DNS from config before rendering",
-        "    # temp in the client config dir ($AWG_DIR) -> mv = atomic rename.\n"
-        "    local tmpfile\n",
-        "    local client_dns\n"
-        '    if [[ -n "${CLIENT_DNS_1:-}" ]]; then\n'
-        '        client_dns="${CLIENT_DNS_1}, ${CLIENT_DNS_2:-$CLIENT_DNS_1}"\n'
-        "    else\n"
-        '        client_dns="1.1.1.1, 1.0.0.1"\n'
-        "    fi\n"
-        "\n"
-        "    # temp in the client config dir ($AWG_DIR) -> mv = atomic rename.\n"
-        "    local tmpfile\n",
+        "resolve client DNS from config before rendering (upstream v5.37.0 added native CLIENT_DNS; Freedom keeps CLIENT_DNS_1/2)",
+        "        client_dns=$(awg_client_dns) || return 1",
+        '        if [[ -n "${CLIENT_DNS_1:-}" ]]; then\n'
+        '            client_dns="${CLIENT_DNS_1}, ${CLIENT_DNS_2:-$CLIENT_DNS_1}"\n'
+        "        else\n"
+        '            client_dns="1.1.1.1, 1.0.0.1"\n'
+        "        fi",
     ),
-    (
-        "awg_common.sh",
-        "client config uses the resolved DNS",
-        "DNS = 1.1.1.1, 1.0.0.1\nMTU = ${mtu}\n",
-        "DNS = ${client_dns}\nMTU = ${mtu}\n",
-    ),
+    # (client config "DNS = ${client_dns}" is now rendered natively by bivlked
+    # v5.37.0, so the old hardcoded-DNS rewrite rule is no longer needed.)
 ]
 
 
