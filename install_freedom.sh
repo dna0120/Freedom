@@ -5917,6 +5917,67 @@ update_repair_hy2_cert() {
     fi
 }
 
+update_repair_kernel_dkms() {
+    local d src_dir="" compat_h bak_file
+    for d in /usr/src/amneziawg-*; do
+        if [[ -f "$d/compat/compat.h" ]]; then
+            src_dir="$d"
+            break
+        fi
+    done
+    [[ -n "$src_dir" ]] || return 0
+    compat_h="$src_dir/compat/compat.h"
+    bak_file="$src_dir/compat/compat.h.awg-base"
+    if grep -q '__compat_setup_udp_tunnel_sock' "$compat_h"; then
+        return 0
+    fi
+    log "Applying kernel 7.0+ compatibility fix to $compat_h..."
+    [[ -f "$bak_file" ]] || cp -a "$compat_h" "$bak_file" 2>/dev/null || true
+    python3 - "$compat_h" <<'PY' || true
+import sys
+from pathlib import Path
+target = Path(sys.argv[1])
+content = target.read_text(encoding="utf-8")
+old_block = """#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 1, 5)
+#include <net/udp_tunnel.h>
+#define setup_udp_tunnel_sock(net, sk, sock_cfg) setup_udp_tunnel_sock(net, sk->sk_socket, sock_cfg)
+#define udp_tunnel_sock_release(sk) udp_tunnel_sock_release(sk->sk_socket)
+#endif"""
+new_block = """/* Kernel 7.0+ udp_tunnel backport fix */
+#include <net/udp_tunnel.h>
+
+static inline void __compat_udp_tunnel_sock_release(struct sock *sk)
+{
+	if (__builtin_types_compatible_p(typeof(&udp_tunnel_sock_release), void (*)(struct sock *)))
+		((void (*)(struct sock *))udp_tunnel_sock_release)(sk);
+	else
+		((void (*)(struct socket *))udp_tunnel_sock_release)(sk->sk_socket);
+}
+
+static inline void __compat_setup_udp_tunnel_sock(struct net *net, struct sock *sk,
+						    struct udp_tunnel_sock_cfg *cfg)
+{
+	if (__builtin_types_compatible_p(typeof(&setup_udp_tunnel_sock),
+					  void (*)(struct net *, struct sock *, struct udp_tunnel_sock_cfg *)))
+		((void (*)(struct net *, struct sock *, struct udp_tunnel_sock_cfg *))setup_udp_tunnel_sock)(net, sk, cfg);
+	else
+		((void (*)(struct net *, struct socket *, struct udp_tunnel_sock_cfg *))setup_udp_tunnel_sock)(net, sk->sk_socket, cfg);
+}
+
+#define udp_tunnel_sock_release(sk) __compat_udp_tunnel_sock_release(sk)
+#define setup_udp_tunnel_sock(net, sk, cfg) __compat_setup_udp_tunnel_sock(net, sk, cfg)"""
+if old_block in content:
+    target.write_text(content.replace(old_block, new_block, 1), encoding="utf-8")
+PY
+    if command -v dkms >/dev/null 2>&1; then
+        dkms autoinstall 2>/dev/null || true
+    fi
+    if command -v dpkg >/dev/null 2>&1; then
+        dpkg --configure -a 2>/dev/null || true
+    fi
+    log "Kernel 7.0+ DKMS compatibility check completed."
+}
+
 step_apply_updates() {
     local tmpdir new_installer common_sha manage_sha xc_sha xm_sha hc_sha hm_sha
     if [ "$(id -u)" -ne 0 ]; then die "Run the script as root (sudo bash $0 --update)."; fi
@@ -6027,6 +6088,7 @@ step_apply_updates() {
         fi
         _update_guard_service hysteria-server "$HY2_SERVER_YAML" "$hy2_bak" "$hy2_was" "Hysteria2"
     fi
+    update_repair_kernel_dkms
     log "AmneziaWG apt packages were NOT upgraded. Re-run --check-updates for candidate versions."
     log "=== UPDATE APPLY COMPLETED ==="
 }
