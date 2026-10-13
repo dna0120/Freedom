@@ -23,7 +23,7 @@ This repo is the installer. Live per-country tuning, monitoring, and incident re
 **Pinned release (recommended):**
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/dna0120/Freedom/v1.3.1/install_freedom.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/dna0120/Freedom/v1.3.14/install_freedom.sh)
 ```
 
 **Bleeding edge (`main`, can change at any time):**
@@ -35,7 +35,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/dna0120/Freedom/main/install
 If you are not root:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dna0120/Freedom/v1.3.0/install_freedom.sh -o freedom.sh && sudo bash freedom.sh
+curl -fsSL https://raw.githubusercontent.com/dna0120/Freedom/v1.3.14/install_freedom.sh -o freedom.sh && sudo bash freedom.sh
 ```
 
 First run on a clean machine asks what to install:
@@ -156,7 +156,7 @@ Installer miễn phí. Bộ tham số đang sống theo từng quốc gia, giám
 **Khuyến nghị (release ghim):**
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/dna0120/Freedom/v1.3.1/install_freedom.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/dna0120/Freedom/v1.3.14/install_freedom.sh)
 ```
 
 **Bleeding edge (`main`, có thể thay đổi bất cứ lúc nào):**
@@ -168,7 +168,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/dna0120/Freedom/main/install
 Không phải root:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dna0120/Freedom/v1.3.0/install_freedom.sh -o freedom.sh && sudo bash freedom.sh
+curl -fsSL https://raw.githubusercontent.com/dna0120/Freedom/v1.3.14/install_freedom.sh -o freedom.sh && sudo bash freedom.sh
 ```
 
 Lần chạy đầu trên máy sạch, script hỏi muốn cài gì:
