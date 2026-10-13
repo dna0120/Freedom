@@ -8,14 +8,14 @@ fi
 # ==============================================================================
 # AmneziaWG 2.0 peer management script
 # Author: @dna0120
-# Version: 5.37.0
-# Date: 2026-09-28
+# Version: 5.37.1
+# Date: 2026-10-13
 # Repository: https://github.com/dna0120/Freedom
 # ==============================================================================
 
 # --- Safe mode and Constants ---
 # shellcheck disable=SC2034
-SCRIPT_VERSION="5.37.0"
+SCRIPT_VERSION="5.37.1"
 set -o pipefail
 # awg show colours its labels when WG_COLOR_MODE=always is in the environment,
 # even into a pipe. The secrets filter then does not recognise "header
@@ -25,12 +25,32 @@ set -o pipefail
 # passes. Nothing here needs colour from the tools, so it is off for the whole
 # script.
 export WG_COLOR_MODE=never
+# On Debian su without "-", like a run from cron, leaves PATH without the sbin
+# directories. Then sysctl and ufw, which the script calls by name, are not found,
+# and check falsely reports IP forwarding off and UFW not installed. The missing
+# directories are appended, so the order the user chose is not overridden.
+_awg_ensure_sbin_path() {
+    local d
+    for d in /usr/local/sbin /usr/sbin /sbin; do
+        case ":${PATH}:" in
+            *":${d}:"*) ;;
+            *) PATH="${PATH:+${PATH}:}${d}" ;;
+        esac
+    done
+    export PATH
+}
+_awg_ensure_sbin_path
 AWG_DIR="/root/awg"
 SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"
 CONFIG_FILE="$AWG_DIR/awgsetup_cfg.init"
 KEYS_DIR="$AWG_DIR/keys"
 COMMON_SCRIPT_PATH="$AWG_DIR/awg_common.sh"
 LOG_FILE="$AWG_DIR/manage_amneziawg.log"
+# The kernel module helper and the paths repair-module looks at (tests rewrite
+# these three lines in a copy of the script; one assignment per line).
+AWG_ENSURE_HELPER=/usr/local/sbin/amneziawg-ensure-module
+KMOD_MODULES_DIR=/lib/modules
+KMOD_SYS_DIR=/sys/module
 NO_COLOR=0
 VERBOSE_LIST=0
 JSON_OUTPUT=0
@@ -68,6 +88,13 @@ _manage_cleanup() {
         [[ -d "$d" ]] && rm -rf "$d"
     done
     type _awg_cleanup &>/dev/null && _awg_cleanup
+    # The third-line module probe (restore into 3.1) cleans up after itself and
+    # leaves a record only when the temporary interface could not be removed.
+    # Parsing a record from the shared directory is not attempted here, but a
+    # possible leftover on a working server must not go unmentioned either.
+    if [[ -e "${TMPDIR:-/tmp}/awg31probe.$$.iface" ]]; then
+        log_warn "The module probe may have left a temporary interface: find it with ip link show type amneziawg | grep awgp$$ and remove it with ip link del <name>. Probe record: ${TMPDIR:-/tmp}/awg31probe.$$.iface"
+    fi
 }
 # On INT/TERM the cleanup used to run but the script did NOT exit - execution
 # continued past the interrupted command and cleanup ran again on EXIT. A signal
@@ -462,11 +489,19 @@ _backup_configs_nolock() {
     # pre-restore snapshot: otherwise, with 10 backups already present, prune
     # would drop the oldest one, which may be exactly the backup selected for
     # restore (it lives in the same $AWG_DIR/backups directory).
-    local no_prune=0
-    if [[ "${1:-}" == "--no-prune" ]]; then
-        no_prune=1
+    # --snapshot: the pre-restore snapshot. The header protection key file (a
+    # regular file; restore refuses a link or a directory before the snapshot) is
+    # taken as it is, without the consistency check: rollback must return exactly
+    # what was there, and restore must stay a way to repair a damaged key.
+    local no_prune=0 snapshot=0
+    while [[ "${1:-}" == --* ]]; do
+        case "$1" in
+            --no-prune) no_prune=1 ;;
+            --snapshot) snapshot=1 ;;
+            *) break ;;
+        esac
         shift
-    fi
+    done
     log "Creating backup..."
     local bd="$AWG_DIR/backups"
     mkdir -p "$bd" || die "mkdir error $bd"
@@ -545,6 +580,42 @@ _backup_configs_nolock() {
             log_error "Failed to save server_public.key to backup."
             rm -rf "$td"
             return 1
+        fi
+    fi
+
+    # Header protection key (3.1). On a 3.1 installation it is mandatory: without
+    # it the backup cannot be restored into a working server. awg_hpk_ensure checks
+    # the file against awg0.conf and restores a lost file from the config; a
+    # mismatch refuses the backup with the reason named. The pre-restore snapshot
+    # takes the file as it is (see --snapshot).
+    local _hpk _hpk_gen
+    if ! _hpk=$(awg_hpk_path); then
+        log_error "AWG_DIR is not set: the header protection key would be missing from the backup."
+        rm -rf "$td"
+        return 1
+    fi
+    if (( snapshot )); then
+        if [[ -f "$_hpk" && ! -L "$_hpk" ]] && ! cp -a "$_hpk" "$td/"; then
+            log_error "Failed to save $_hpk to the snapshot."
+            rm -rf "$td"
+            return 1
+        fi
+    else
+        # Checked under any marker: a broken marker, or marker 2.0 with a key in
+        # awg0.conf, would give an archive that restore then refuses. Without a key
+        # awg_hpk_ensure only warns, and the backup goes on as before.
+        if ! awg_hpk_ensure manage; then
+            log_error "The header protection key does not match the installation (reason above) - backup not created: such an archive would not restore."
+            rm -rf "$td"
+            return 1
+        fi
+        _hpk_gen=$(_awg_generation_from_init "$CONFIG_FILE") || _hpk_gen=""
+        if [[ "$_hpk_gen" == "3.1" ]]; then
+            if ! cp -a "$_hpk" "$td/" || ! chmod 600 "$td/server_hpk.key"; then
+                log_error "3.1 installation: the header protection key ($_hpk) was not saved - backup not created."
+                rm -rf "$td"
+                return 1
+            fi
         fi
     fi
 
@@ -639,13 +710,68 @@ _restore_do_rollback() {
         log_error "Failed to unpack rollback snapshot ($_snap). Manual recovery: tar -xzf $_snap -C <target dir>"
         return 1
     fi
-    local _scdir
+    local _scdir _inc=0
     _scdir=$(dirname "$SERVER_CONF_FILE")
-    [[ -d "$_rtd/server" ]] && cp -a "$_rtd/server/"* "$_scdir/" 2>/dev/null
-    [[ -d "$_rtd/clients" ]] && cp -a "$_rtd/clients/"* "$AWG_DIR/" 2>/dev/null
-    [[ -d "$_rtd/keys" ]] && cp -a "$_rtd/keys/"* "$KEYS_DIR/" 2>/dev/null
-    [[ -f "$_rtd/server_private.key" ]] && cp -a "$_rtd/server_private.key" "$AWG_DIR/" 2>/dev/null
-    [[ -f "$_rtd/server_public.key" ]] && cp -a "$_rtd/server_public.key" "$AWG_DIR/" 2>/dev/null
+    # Client files and keys are brought to exactly the snapshot, not laid over:
+    # restore has already replaced them with the archived set, and a client from
+    # the archive that did not exist before restore would otherwise stay next to
+    # the previous ones (on a generation change - a profile of the other
+    # generation).
+    # The snapshot takes client configs and keys whole (a copy failure fails the
+    # snapshot), QR codes and vpnuri files where it can, they are reissued from
+    # the configs. A copy failure after the removal is said out loud: otherwise
+    # rollback would silently leave an empty set with rolled_back=true.
+    if [[ -d "$_rtd/clients" ]]; then
+        rm -f "$AWG_DIR"/*.conf "$AWG_DIR"/*.png "$AWG_DIR"/*.vpnuri 2>/dev/null
+        if compgen -G "$AWG_DIR/*.conf" >/dev/null || compgen -G "$AWG_DIR/*.png" >/dev/null \
+            || compgen -G "$AWG_DIR/*.vpnuri" >/dev/null; then
+            log_error "Rollback: could not remove the archived client files in $AWG_DIR - extra files stay next to the ones from the snapshot."
+            _inc=1
+        fi
+    fi
+    if [[ -d "$_rtd/keys" ]]; then
+        rm -f "$KEYS_DIR"/* 2>/dev/null
+        if compgen -G "$KEYS_DIR/*" >/dev/null; then
+            log_error "Rollback: could not remove the archived client keys in $KEYS_DIR."
+            _inc=1
+        fi
+    fi
+    if compgen -G "$_rtd/server/*" >/dev/null && ! cp -a "$_rtd/server/"* "$_scdir/" 2>/dev/null; then
+        log_error "Rollback: the server config was not returned to $_scdir. It is in the snapshot $_snap (directory server/)."
+        _inc=1
+    fi
+    if compgen -G "$_rtd/clients/*" >/dev/null && ! cp -a "$_rtd/clients/"* "$AWG_DIR/" 2>/dev/null; then
+        log_error "Rollback: client files were not returned to $AWG_DIR. They are in the snapshot $_snap (directory clients/)."
+        _inc=1
+    fi
+    if compgen -G "$_rtd/keys/*" >/dev/null && ! cp -a "$_rtd/keys/"* "$KEYS_DIR/" 2>/dev/null; then
+        log_error "Rollback: client keys were not returned to $KEYS_DIR. They are in the snapshot $_snap (directory keys/)."
+        _inc=1
+    fi
+    local _kf
+    for _kf in server_private.key server_public.key; do
+        if [[ -f "$_rtd/$_kf" ]] && ! cp -a "$_rtd/$_kf" "$AWG_DIR/" 2>/dev/null; then
+            log_error "Rollback: $_kf was not returned to $AWG_DIR. It is in the snapshot $_snap."
+            _inc=1
+        fi
+    done
+    # Header protection key file: as in the snapshot. restore does not start when
+    # a link or a directory stands where the key belongs, so here it is either a
+    # regular file or absent. Missing from the snapshot - restore put it in place,
+    # so it goes; present - it comes back with mode 600, without following a link
+    # at the destination.
+    local _hpk
+    if _hpk=$(awg_hpk_path 2>/dev/null); then
+        if [[ -f "$_rtd/server_hpk.key" ]]; then
+            if ! ( umask 077; cp --remove-destination "$_rtd/server_hpk.key" "$_hpk" ) 2>/dev/null \
+                || ! chmod 600 "$_hpk" 2>/dev/null; then
+                log_error "Rollback: the header protection key was not returned to $_hpk. It is in the snapshot $_snap."
+                _inc=1
+            fi
+        elif [[ -f "$_hpk" && ! -L "$_hpk" ]]; then
+            rm -f "$_hpk" 2>/dev/null || { log_error "Rollback: could not remove $_hpk placed by restore."; _inc=1; }
+        fi
+    fi
     # Expiry stamps are brought back to exactly the snapshot. restore may have
     # put stamps from the archive in place, and such a stamp on a client that
     # was permanent before restore would have cron delete it at the archived
@@ -659,6 +785,7 @@ _restore_do_rollback() {
             rm -f "$_ef" 2>/dev/null
             if [[ -e "$_ef" || -L "$_ef" ]]; then
                 log_error "Rollback: could not remove the archived expiry stamp $_ef - cron may delete client '${_ef##*/}' at the archived deadline. Remove the stamp by hand."
+                _inc=1
             fi
         done
     fi
@@ -666,13 +793,23 @@ _restore_do_rollback() {
         mkdir -p "$_edir"
         if compgen -G "$_rtd/expiry/*" >/dev/null && ! cp -a "$_rtd/expiry"/* "$_edir/" 2>/dev/null; then
             log_error "Rollback: expiry stamps from the snapshot were not restored to $_edir - check client deadlines (manage list)."
+            _inc=1
         fi
     fi
-    [[ -f "$_rtd/awg-expiry" ]] && cp -a "$_rtd/awg-expiry" /etc/cron.d/awg-expiry 2>/dev/null
+    if [[ -f "$_rtd/awg-expiry" ]] && ! cp -a "$_rtd/awg-expiry" /etc/cron.d/awg-expiry 2>/dev/null; then
+        log_error "Rollback: /etc/cron.d/awg-expiry was not returned - without it expired clients are not removed. It is in the snapshot $_snap."
+        _inc=1
+    fi
     rm -rf "$_rtd"
     # Rollback files are in place - the JSON envelope reports rolled_back=true
     # even if the service below fails to start (FS state is already pre-restore).
     _RESTORE_ROLLED_BACK=1
+    # A partial rollback is told apart in the JSON envelope: rollback_complete=false.
+    _RESTORE_ROLLBACK_COMPLETE=1
+    if (( _inc )); then
+        _RESTORE_ROLLBACK_COMPLETE=0
+        log_error "Rollback incomplete (reasons above): the missing files are in the snapshot $_snap."
+    fi
 
     log "Rollback done — attempting to start service..."
     if systemctl start awg-quick@awg0; then
@@ -692,6 +829,25 @@ _restore_do_rollback() {
 _path_has_parent_component() {
     local p="$1"
     [[ "$p" == ".." || "$p" == "../"* || "$p" == *"/../"* || "$p" == *"/.." ]]
+}
+
+# _restore_check_candidate <unpacked backup> : check the restore candidate on ITS
+# paths, in a subshell with CONFIG_FILE, SERVER_CONF_FILE and AWG_DIR overridden,
+# not on the live ones. The key rules are those of awg_hpk_ensure: the marker from
+# the backup init (no init in the backup - the marker stays live, as it does after
+# restore), the key in its awg0.conf and the key file at the backup root agree; a
+# lost file is restored from the config inside the unpacked directory. Then
+# validate_awg_config on the candidate config; the checks print their own reasons.
+_restore_check_candidate() {
+    local td="$1" init
+    init="$td/clients/awgsetup_cfg.init"
+    [[ -f "$init" ]] || init="$CONFIG_FILE"
+    (
+        CONFIG_FILE="$init"
+        SERVER_CONF_FILE="$td/server/$(basename "$SERVER_CONF_FILE")"
+        AWG_DIR="$td"
+        awg_hpk_ensure manage && validate_awg_config
+    )
 }
 
 restore_backup() {
@@ -789,8 +945,8 @@ restore_backup() {
             _restore_do_rollback "$_rollback_snap" || true
         fi
         [[ -n "$td" && -d "$td" ]] && rm -rf "$td"
-        [[ -n "${config_lock_fd:-}" ]] && exec {config_lock_fd}>&- 2>/dev/null
-        [[ -n "${backup_lock_fd:-}" ]] && exec {backup_lock_fd}>&- 2>/dev/null
+        [[ -n "${config_lock_fd:-}" ]] && { exec {config_lock_fd}>&-; } 2>/dev/null
+        [[ -n "${backup_lock_fd:-}" ]] && { exec {backup_lock_fd}>&-; } 2>/dev/null
         return $_rc
     }
     trap _restore_cleanup RETURN
@@ -801,16 +957,6 @@ restore_backup() {
     # _restore_cleanup clears these hooks itself (trap - INT TERM above).
     trap '_restore_cleanup; exit 130' INT
     trap '_restore_cleanup; exit 143' TERM
-
-    log "Backing up current config..."
-    # --no-prune: the backup selected for restore ($bf) lives in the same
-    # backups dir; pruning after the pre-restore snapshot could delete it.
-    if ! _backup_configs_nolock --no-prune; then
-        log_error "Failed to create backup of current configuration."
-        return 1
-    fi
-    # Capture rollback snapshot (set by _backup_configs_nolock)
-    _rollback_snap="${LAST_BACKUP_PATH:-}"
 
     manage_mktempdir_var td || {
         log_error "Failed to create temp directory"
@@ -901,8 +1047,73 @@ restore_backup() {
         log_warn "awg_common.sh is outdated: awg_restore_generation_notice is missing, the generation check on restore was skipped. Update the scripts (section 'How to Update Scripts' in ADVANCED.en.md)."
     fi
 
+    # The whole candidate is checked BEFORE the snapshot and BEFORE the service
+    # stops: the marker, the key in the config and the key file agree, the config
+    # passes validation. A refusal here stops nothing, rewrites nothing and leaves
+    # no snapshot behind.
+    if ! _restore_check_candidate "$td"; then
+        log_error "The backup failed the check (reason above) - restore cancelled, the service was not stopped, no files were changed."
+        return 1
+    fi
+    local _cand_init="$td/clients/awgsetup_cfg.init" _cand_gen _hpk
+    [[ -f "$_cand_init" ]] || _cand_init="$CONFIG_FILE"
+    _cand_gen=$(_awg_generation_from_init "$_cand_init") || _cand_gen=""
+    _hpk=$(awg_hpk_path) || { log_error "AWG_DIR is not set - restore cancelled."; return 1; }
+    # A link or a directory where the key file belongs: the snapshot and rollback
+    # cannot return it exactly, and a key write would miss. That is a manual edit,
+    # a person sorts it out.
+    if [[ -L "$_hpk" || ( -e "$_hpk" && ! -f "$_hpk" ) ]]; then
+        log_error "$_hpk is not a regular file (a link or a directory): restore cancelled, the service was not stopped, no files were changed. Remove it by hand and run restore again."
+        return 1
+    fi
+    # A 3.1 backup goes back only where the third line will come up: a
+    # second-line module silently accepts the header protection key, the service
+    # would start and clients could not connect. The check is the one the
+    # installer runs at step 3 (decision Р6, 27 sep 2026).
+    if [[ "$_cand_gen" == "3.1" ]]; then
+        local _blk=""
+        # A library without the check (a new manage with an older awg_common.sh of
+        # the same MAJOR.MINOR) is a refusal, not a pass: not knowing means no here.
+        if ! declare -F awg31_restore_blocker >/dev/null || ! declare -F _awg31_restore_blocker_reason >/dev/null; then
+            log_error "awg_common.sh is outdated: it lacks the third-line environment check, and a 3.1 backup is not restored without it. Update the scripts (section 'How to Update Scripts' in ADVANCED.en.md). Restore cancelled, the service was not stopped, no files were changed."
+            return 1
+        fi
+        _blk=$(awg31_restore_blocker) || :
+        if [[ "$_blk" != pass ]]; then
+            log_error "A 3.1 backup cannot be restored on this server: $(_awg31_restore_blocker_reason "$_blk"). The service would come up and clients could not connect. Restore cancelled, the service was not stopped, no files were changed."
+            return 1
+        fi
+    fi
+
+    log "Backing up current config..."
+    # --no-prune: the backup selected for restore ($bf) lives in the same
+    # backups dir; pruning after the pre-restore snapshot could delete it.
+    if ! _backup_configs_nolock --no-prune --snapshot; then
+        log_error "Failed to create backup of current configuration."
+        return 1
+    fi
+    # Capture rollback snapshot (set by _backup_configs_nolock)
+    _rollback_snap="${LAST_BACKUP_PATH:-}"
+
     log "Stopping service..."
-    systemctl stop awg-quick@awg0 || log_warn "Service not stopped."
+    if ! systemctl stop awg-quick@awg0; then
+        log_error "Service not stopped - restore cancelled, no files were changed (snapshot of the current state: ${_rollback_snap}). Check: systemctl status awg-quick@awg0"
+        return 1
+    fi
+    # Device parameters, the header protection key among them, stick on a live
+    # interface, so restore works only by recreating awg0. An interface left
+    # after the stop is a refusal before any file is replaced. The service is
+    # already stopped, so it is started again and the outcome is said plainly.
+    if ip link show awg0 >/dev/null 2>&1; then
+        log_error "Interface awg0 is still present after the service stopped - restore cancelled, no files were changed."
+        if systemctl start awg-quick@awg0; then
+            log_warn "The service is running again on the previous files. Take awg0 down (awg-quick down awg0) and run restore again."
+        else
+            log_error "The service did not start again: it is stopped and awg0 is still there. Take awg0 down (awg-quick down awg0), then systemctl start awg-quick@awg0 or run restore again."
+            _log_service_status
+        fi
+        return 1
+    fi
 
     # From here on destructive ops. All error paths → trap _restore_cleanup → rollback.
     _destructive_ops_started=1
@@ -983,6 +1194,15 @@ restore_backup() {
         fi
         chmod 600 "$AWG_DIR/server_public.key" 2>/dev/null || true
     fi
+    # Header protection key: only for a 3.1 candidate, the file is already
+    # checked against its awg0.conf. Mode 600 from creation, a link at the
+    # destination is replaced rather than written through.
+    if [[ "$_cand_gen" == "3.1" ]]; then
+        if ! ( umask 077; cp --remove-destination "$td/server_hpk.key" "$_hpk" ) || ! chmod 600 "$_hpk"; then
+            log_error "Error copying the header protection key to $_hpk - restore aborted (triggering rollback)."
+            return 1
+        fi
+    fi
 
     if [[ -d "$td/expiry" ]]; then
         log "Restoring expiry data..."
@@ -1049,6 +1269,20 @@ restore_backup() {
 
     # Success — rollback not needed, trap only performs cleanup
     _restore_ok=1
+    # The restored installation is not 3.1, and the key file of the previous 3.1
+    # is still here: it is not deleted but moved to archive/<time>-3.1/, so the
+    # way back to 3.1 stays open. The move is after a successful start, so
+    # rollback never has to undo it.
+    if [[ "$_cand_gen" != "3.1" ]] && [[ -e "$_hpk" || -L "$_hpk" ]]; then
+        local _arch
+        _arch="$AWG_DIR/archive/$(date +%F_%H-%M-%S.%3N)-3.1"
+        if mkdir -p "$AWG_DIR/archive" && chmod 700 "$AWG_DIR/archive" && mkdir -m 700 "$_arch" \
+            && mv -n "$_hpk" "$_arch/" && [[ ! -e "$_hpk" && ! -L "$_hpk" ]]; then
+            log "The header protection key file moved to $_arch/: the restored ${_cand_gen:-2.0} installation does not use it."
+        else
+            log_warn "Could not move $_hpk to the archive: the ${_cand_gen:-2.0} installation does not use it, the file can be removed by hand."
+        fi
+    fi
     # The restore replaced awg0.conf and recreated the interface, so the
     # device-parameter snapshot has to be taken again: it must describe what is
     # on the live interface NOW, not what was there before the restore.
@@ -1244,8 +1478,15 @@ modify_client() {
             # check_dependencies calls _check_common_compat BEFORE the command
             # dispatch and dies on a MAJOR.MINOR mismatch, so "a fresh manage
             # next to an old library" never reaches this point.
+            # With CLIENT_IPV6_DIRECT=1 a mode-2 list without IPv6 is the chosen setup,
+            # nothing to warn about; 0.0.0.0/0 needs ::/0 even with the key (iOS).
+            # The init file is not loaded before modify, so the key is read here, in a subshell.
+            local _v6d=""
+            if [[ "$param" == "AllowedIPs" && "$value" != *:* ]] && ! _aip_has_token "$value" "0.0.0.0/0"; then
+                _v6d=$(safe_load_config "$CONFIG_FILE" >/dev/null 2>&1; _aip_direct_applies "$value" && printf yes)
+            fi
             if [[ "$param" == "AllowedIPs" && "$value" != *:* ]] \
-               && _is_full_tunnel "$value"; then
+               && _is_full_tunnel "$value" && [[ "$_v6d" != "yes" ]]; then
                 log_warn "AllowedIPs of client '$name' is a full tunnel without an IPv6 route - the device's IPv6 will go around the tunnel with its real address. To restore the route: regen '$name'."
             fi
             ;;
@@ -1404,6 +1645,21 @@ show_awg_status() {
         return 1
     fi
     return "$_gen_rc"
+}
+
+# _conf_jc : Jc from [Interface] of the server config as amneziawg-tools would
+# apply it (key case-insensitive, last value wins), leading zeros dropped;
+# empty when the key is missing, the file is unreadable or the value is not a
+# number. check and diagnose compare it with an interface on which awg show
+# prints no jc line.
+_conf_jc() {
+    local pairs sec k v jc=""
+    pairs=$(_awg_conf_pairs "$SERVER_CONF_FILE" 2>/dev/null) || return 0
+    while IFS=$'\t' read -r sec k v; do
+        if [[ "$sec" == interface && "$k" == jc ]]; then jc="$v"; fi
+    done <<< "$pairs"
+    [[ "$jc" =~ ^[0-9]+$ ]] || return 0
+    _awg_dec_strip "$jc"
 }
 
 check_server() {
@@ -1593,8 +1849,20 @@ check_server() {
     # a timeout by its message, any other status by its code.
     elif (( _filter_ok )); then
         while IFS= read -r _l; do log "  $_l"; done <<< "$_awg_out"
-        if grep -q "jc:" <<< "$_awg_out"; then
+        # awg show prints the jc line only for a non-zero value. When it is
+        # absent but S or H lines are there, the interface runs with Jc = 0, and
+        # that is checked against awg0.conf: a zero the file does not have is a
+        # mismatch.
+        local _cjc
+        if grep -qE '^[[:space:]]*jc:' <<< "$_awg_out"; then
             log " - Obfuscation parameters: active"
+        elif grep -qE '^[[:space:]]*(s[1-4]|h[1-4]):' <<< "$_awg_out"; then
+            _cjc=$(_conf_jc)
+            if [[ -z "$_cjc" || "$_cjc" == 0 ]]; then
+                log " - Obfuscation parameters: active (Jc = 0: junk packets off)"
+            else
+                log_warn " - Obfuscation parameters: the interface runs with Jc = 0, but awg0.conf has Jc=${_cjc}. To apply the config: sudo systemctl restart awg-quick@awg0"
+            fi
         else
             log_warn " - Obfuscation parameters not detected"
         fi
@@ -1628,6 +1896,373 @@ check_server() {
 # Megafon Moscow in the table is still 🔄 testing (Jc=3, Jmin=80, Jmax=268) -
 # the range is wider than mobile preset; will add once the operator is
 # confirmed and the range is fixed. T-Mobile MO US - Discussion #45 (o2me).
+# ==============================================================================
+# Kernel module: the path through the amneziawg-ensure-module helper (track K, kernel 7.0)
+# ==============================================================================
+
+# Which helper is installed. _KH_CLASS:
+#   current  - version 3 or later: has --repair, --finish and --status;
+#   outdated - known to be old: version 1-2, or a helper from before v5.37.1,
+#              which answers --version with exit 2, an empty stdout and
+#              "missing or unknown mode" on stderr;
+#   absent   - no file (servers before v5.12.0, the ARM prebuilt);
+#   broken   - the file is there but does not run or answers oddly.
+_KH_CLASS=""
+_kmod_helper_class() {
+    local out err rc=0
+    _KH_CLASS=broken
+    if [[ ! -e "$AWG_ENSURE_HELPER" && ! -L "$AWG_ENSURE_HELPER" ]]; then _KH_CLASS=absent; return 0; fi
+    [[ -f "$AWG_ENSURE_HELPER" && -x "$AWG_ENSURE_HELPER" ]] || return 0
+    out=$(timeout 10 "$AWG_ENSURE_HELPER" --version 2>/dev/null) || rc=$?
+    if [[ "$rc" -eq 0 && "$out" =~ ^amneziawg-ensure-module\ ([0-9]+)$ ]]; then
+        if [[ "${BASH_REMATCH[1]}" -ge 3 ]]; then _KH_CLASS=current; else _KH_CLASS=outdated; fi
+        return 0
+    fi
+    if [[ "$rc" -eq 2 && -z "$out" ]]; then
+        err=$(timeout 10 "$AWG_ENSURE_HELPER" --version 2>&1 >/dev/null || true)
+        [[ "$err" == *"amneziawg-ensure-module: missing or unknown mode"* ]] && _KH_CLASS=outdated
+    fi
+    return 0
+}
+
+# Without a new helper the server is classified here, and every query fails
+# closed. _KL: legacy (the ARM prebuilt, or no amneziawg-dkms package - their
+# usual path), dkms (the package is installed: the PPA path with an old
+# helper), query (dpkg could not be asked - a refusal).
+_KL=""
+_kmod_legacy_class() {
+    local q e
+    _KL=query
+    if q=$(LC_ALL=C dpkg-query -W -f='${Package} ${Status}\n' 'amneziawg-kmod-*' 2>/dev/null); then
+        if awk '$NF != "not-installed" && $NF != "config-files" {f=1} END {exit !f}' <<<"$q"; then _KL=legacy; return 0; fi
+    else
+        e=$(LC_ALL=C dpkg-query -W -f='${Package} ${Status}\n' 'amneziawg-kmod-*' 2>&1 >/dev/null || true)
+        [[ "$e" == *"no packages found matching"* ]] || return 0
+    fi
+    if ! q=$(LC_ALL=C dpkg-query -W -f='${Status}' amneziawg-dkms 2>/dev/null); then
+        e=$(LC_ALL=C dpkg-query -W -f='${Status}' amneziawg-dkms 2>&1 >/dev/null || true)
+        [[ "$e" == *"no packages found matching"* ]] && _KL=legacy
+        return 0
+    fi
+    case "${q##* }" in not-installed|config-files) _KL=legacy ;; *) _KL=dkms ;; esac
+    return 0
+}
+
+# Parses "helper --status" (the contract is in the helper's mode_status, the
+# same check as in the installer). Only a whole report is accepted: every
+# record with all its keys and allowed values, exactly one running-kernel
+# record, one path/source/module/packages each, no kernel twice, a status line
+# last, an exit code that matches complete. Unknown records and extra keys at
+# the end of a record are skipped. Fills _KS_*.
+_KS_OK=0 _KS_COMPLETE=0 _KS_KIND="" _KS_REASON="" _KS_SRC="" _KS_FIX="" _KS_LOADED="" _KS_AUDIT="" _KS_TIME=""
+_KS_KERNELS=()
+# Arguments: output file, --status exit code
+_kmod_status_parse() {
+    local f="$1" code="$2" line last="" n_run=0 n_path=0 n_src=0 n_mod=0 n_pkg=0 rel
+    local -A seen=()
+    local re_k='^kernel release=([A-Za-z0-9._+~-]+) running=(0|1) image=(0|1) module=(0|1|unknown) headers=(ok|missing|broken|unknown) package=(installed|unfinished|unowned|none|unknown)( .*)?$'
+    _KS_OK=0; _KS_COMPLETE=0; _KS_KIND=""; _KS_REASON=""; _KS_SRC=""; _KS_FIX=""; _KS_LOADED=""; _KS_AUDIT=""; _KS_TIME=""
+    _KS_KERNELS=()
+    [[ -r "$f" ]] || return 0
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        last="$line"
+        case "$line" in
+            "path "*)
+                [[ "$line" =~ ^path\ kind=(ppa|prebuilt|pinned|none|refused)\ reason=([a-z-]+)(\ .*)?$ ]] || return 0
+                _KS_KIND="${BASH_REMATCH[1]}"; _KS_REASON="${BASH_REMATCH[2]}"; n_path=$((n_path + 1)) ;;
+            "source "*)
+                [[ "$line" =~ ^source\ state=(base|patched|foreign|absent|unsafe|none|ambiguous|unknown)\ version=[A-Za-z0-9._+~-]+\ fix=(enabled|disabled|unknown)(\ .*)?$ ]] || return 0
+                _KS_SRC="${BASH_REMATCH[1]}"; _KS_FIX="${BASH_REMATCH[2]}"; n_src=$((n_src + 1)) ;;
+            "kernel "*)
+                [[ "$line" =~ $re_k ]] || return 0
+                rel="${BASH_REMATCH[1]}"
+                [[ -z "${seen[$rel]:-}" ]] || return 0
+                seen["$rel"]=1
+                [[ "${BASH_REMATCH[2]}" == 1 ]] && n_run=$((n_run + 1))
+                _KS_KERNELS+=("$line") ;;
+            "module "*)
+                [[ "$line" =~ ^module\ loaded=(0|1)(\ .*)?$ ]] || return 0
+                _KS_LOADED="${BASH_REMATCH[1]}"; n_mod=$((n_mod + 1)) ;;
+            "packages "*)
+                [[ "$line" =~ ^packages\ audit=(empty|unfinished|failed)(\ .*)?$ ]] || return 0
+                _KS_AUDIT="${BASH_REMATCH[1]}"; n_pkg=$((n_pkg + 1)) ;;
+        esac
+    done < "$f"
+    [[ "$last" =~ ^status\ complete=(0|1)\ time=([0-9]+)(\ .*)?$ ]] || return 0
+    _KS_COMPLETE="${BASH_REMATCH[1]}"; _KS_TIME="${BASH_REMATCH[2]}"
+    [[ "$n_run" -eq 1 && "$n_path" -eq 1 && "$n_src" -eq 1 && "$n_mod" -eq 1 && "$n_pkg" -eq 1 ]] || return 0
+    if [[ "$_KS_COMPLETE" -eq 1 ]]; then [[ "$code" -eq 0 ]] || return 0; else [[ "$code" -eq 1 ]] || return 0; fi
+    _KS_OK=1
+}
+
+# Runs --status into a temporary file and parses it; the helper's stderr goes
+# to the log.
+_kmod_status_run() {
+    local sf code=0
+    _KS_OK=0
+    manage_mktempdir_var sf || return 0
+    sf="$sf/status"
+    timeout 60 "$AWG_ENSURE_HELPER" --status > "$sf" 2>> "$LOG_FILE" || code=$?
+    _kmod_status_parse "$sf" "$code"
+}
+
+# Loads the module of the running kernel and starts the service. 0 - module
+# loaded AND service active; 1 - module not loaded; 2 - module confirmed
+# loaded, the service did not become active. A service success does not
+# cover a load failure.
+_kmod_load_and_start() {
+    local cur
+    cur=$(uname -r)
+    if [[ ! -d "$KMOD_SYS_DIR/amneziawg" ]]; then
+        if [[ -n "$(find "$KMOD_MODULES_DIR/$cur" -name 'amneziawg.ko*' -type f -size +0c -print -quit 2>/dev/null)" ]]; then
+            # The helper refreshes the module index only for kernels with
+            # headers, and a module without headers happens: a stale index
+            # would keep modprobe from finding it.
+            depmod -a "$cur" || log_warn "depmod -a $cur failed."
+            modprobe amneziawg || log_warn "modprobe amneziawg failed."
+        fi
+    fi
+    [[ -d "$KMOD_SYS_DIR/amneziawg" ]] || return 1
+    _ensure_awg_quick_running awg0 || return 2
+    return 0
+}
+
+# A JSON array of kernel names (the names are already checked by the parser).
+_kmod_json_list() {
+    local out="" k
+    for k in "$@"; do out="${out:+$out,}\"$k\""; done
+    printf '[%s]' "$out"
+}
+
+# repair-module through the helper. Exit: 0 - success; 1 - failure or
+# refusal; 10 - the helper reported the prebuilt, the pinned 2.0 or "no
+# package" path (their usual previous path; the caller decides).
+_kmod_repair_via_helper() {
+    local hrc=0 frc="" mrc=1 cur k rel run mod hdr pkg rmod="null" rhdr="null" ok=0 other=0 pend_mod=0
+    local -a nomod=() unfin=() unk=()
+    local -A khdr=()
+    # What to do with a kernel that has no module: with its headers installed,
+    # installing them again does not help; the reason is elsewhere (above).
+    _kmod_fix_hint() {
+        if [[ "${khdr[$1]:-}" == ok ]]; then
+            printf 'Headers are installed, but the module is missing (the reason is above): run repair-module again'
+        else
+            printf 'Install linux-headers-%s and run repair-module again' "$1"
+        fi
+    }
+    _kh() { if [[ "$JSON_OUTPUT" -eq 1 ]]; then "$AWG_ENSURE_HELPER" "$@" >&2; else "$AWG_ENSURE_HELPER" "$@"; fi; }
+    cur=$(uname -r)
+    _kmod_status_run
+    if [[ "$_KS_OK" -ne 1 ]]; then
+        _JSON_ERR="module state not obtained (amneziawg-ensure-module --status)"
+        log_error "Could not get the module state from the helper ($AWG_ENSURE_HELPER --status). Nothing changed; details in $LOG_FILE."
+        return 1
+    fi
+    case "$_KS_KIND" in
+        prebuilt|pinned|none) return 10 ;;
+        ppa)
+            # An incomplete status is no authorisation to build: something
+            # could not be checked, and for root that is not normal.
+            if [[ "$_KS_COMPLETE" -ne 1 ]]; then
+                _JSON_ERR="the module state was not determined in full"
+                log_error "The module state was not determined in full (some helper checks failed, details in $LOG_FILE). Nothing changed: fix the cause and run repair-module again."
+                return 1
+            fi ;;
+        refused)
+            _JSON_ERR="repair-module: path not admitted ($_KS_REASON)"
+            case "$_KS_REASON" in
+                query)     log_error "Could not query dpkg or apt-mark. Nothing changed, try again later." ;;
+                nodkms)    log_error "dkms is not installed: nothing to build the module with. Nothing changed." ;;
+                noreg)     log_error "amneziawg-dkms is installed, but the module is not registered in DKMS. Nothing changed; the manual path is in ADVANCED.en.md, section kernel-70-backport-adv." ;;
+                ambiguous) log_error "The module's DKMS registration is not one, or points elsewhere (details in $LOG_FILE). Nothing changed." ;;
+                owner)     log_error "The module source is not owned by the amneziawg-dkms package. Nothing changed." ;;
+                *)         log_error "The repair path is not admitted ($_KS_REASON). Nothing changed." ;;
+            esac
+            return 1 ;;
+    esac
+    # No module and no headers for the running kernel: apt is not called here
+    # (it would set out to configure what --finish would not let through too).
+    for k in "${_KS_KERNELS[@]}"; do
+        [[ "$k" =~ release=([^ ]+)\ running=1\ image=[01]\ module=0\ headers=missing ]] || continue
+        _JSON_ERR="the running kernel has no headers"
+        log_error "The running kernel ${BASH_REMATCH[1]} has neither the AmneziaWG module nor headers. Install them: sudo apt install linux-headers-${BASH_REMATCH[1]} - then run repair-module again."
+        return 1
+    done
+    log "Building the module with the helper (--repair)..."
+    _kh --repair || hrc=$?
+    mrc=0; _kmod_load_and_start || mrc=$?
+    if [[ "$hrc" -eq 0 ]]; then
+        _kh --finish && frc=0 || frc=$?
+    else
+        log_warn "The helper's --repair exited with code $hrc, the reason is above: not running dpkg --configure -a."
+    fi
+    _kmod_status_run
+    log "Checked at: $(date '+%F %T'). Not a snapshot: apt changes during and after the check are not in this report."
+    if [[ "$_KS_OK" -eq 1 ]]; then
+        for k in "${_KS_KERNELS[@]}"; do
+            [[ "$k" =~ release=([^ ]+)\ running=([01])\ image=[01]\ module=([^ ]+)\ headers=([^ ]+)\ package=([^ ]+) ]] || continue
+            rel="${BASH_REMATCH[1]}" run="${BASH_REMATCH[2]}" mod="${BASH_REMATCH[3]}" hdr="${BASH_REMATCH[4]}" pkg="${BASH_REMATCH[5]}"
+            if [[ "$run" -eq 1 ]]; then
+                case "$mod" in 1) rmod=true ;; 0) rmod=false ;; *) rmod=null ;; esac
+                rhdr="\"$hdr\""
+            else
+                [[ "$mod" == 1 ]] && other=1
+            fi
+            [[ "$mod" == unknown ]] && unk+=("$rel")
+            khdr["$rel"]="$hdr"
+            if [[ "$mod" == 0 && "$pkg" == unfinished ]]; then unfin+=("$rel")
+            elif [[ "$run" -eq 0 && "$mod" == 0 ]]; then nomod+=("$rel"); fi
+            [[ "$mod" == 1 && "$pkg" == unfinished ]] && pend_mod=1
+        done
+        for rel in "${nomod[@]}"; do
+            log_warn "Kernel $rel has no AmneziaWG module, do not boot into it. $(_kmod_fix_hint "$rel"), or remove that kernel."
+        done
+        for rel in "${unfin[@]}"; do
+            log_error "Unfinished kernel $rel has no AmneziaWG module: configuring it (dpkg --configure -a) would make it bootable without the tunnel. $(_kmod_fix_hint "$rel"), or remove that kernel."
+        done
+        for rel in "${unk[@]}"; do log_warn "The module of kernel $rel could not be checked (its module directory is not readable)."; done
+        [[ "$_KS_FIX" == disabled ]] && log "The source fix is turned off by hand (--revert); to allow it again: sudo $AWG_ENSURE_HELPER --enable"
+        if [[ "$mrc" -eq 0 && "$_KS_AUDIT" == unfinished ]]; then
+            log_warn "A working tunnel does not mean apt is fixed: packages are left unfinished."
+        fi
+        if [[ "$pend_mod" -eq 1 ]]; then
+            log_warn "A built module does not finish setting up the kernel: initramfs and the boot loader are updated by dpkg --configure -a."
+        fi
+        [[ "$other" -eq 1 ]] && log "Loading the module in another kernel is not tested: after booting into it, check lsmod | grep amneziawg."
+        [[ "$_KS_COMPLETE" -eq 1 ]] || log_warn "The state was not determined in full (some checks failed); details in $LOG_FILE."
+        if [[ "$hrc" -eq 0 && "$mrc" -eq 0 && "${frc:-1}" -eq 0 && "$_KS_COMPLETE" -eq 1 && "$_KS_AUDIT" == empty && ${#unfin[@]} -eq 0 ]]; then
+            ok=1
+        fi
+    else
+        log_warn "The final module state could not be obtained ($AWG_ENSURE_HELPER --status): before a reboot check dkms status amneziawg and dpkg --audit yourself."
+    fi
+    case "$mrc" in
+        1) log_error "The amneziawg kernel module for $cur is not loaded." ;;
+        2) log_error "The kernel module is fine, but the awg-quick@awg0 service did NOT start."
+           log_error "Diagnostics: systemctl status awg-quick@awg0; journalctl -u awg-quick@awg0 -n 50" ;;
+    esac
+    if [[ "$ok" -eq 1 ]]; then
+        log "The module and the service of the running kernel are restored; no unfinished packages. The command does not reboot."
+    else
+        _JSON_ERR="${_JSON_ERR:-repair not complete}"
+        log_error "Repair not complete (build: $hrc, load and service: $mrc, packages: ${frc:-not run}). Details above."
+    fi
+    if [[ "$JSON_OUTPUT" -eq 1 ]]; then
+        # A fact we do not have is null, not false or an empty list.
+        local jok=false jmod=false jsvc=false jst=null jpk=null jsrc=null jfix=null jfrc="${frc:-null}" jnm=null jun=null junk=null
+        [[ "$ok" -eq 1 ]] && jok=true
+        [[ "$mrc" -ne 1 ]] && jmod=true
+        [[ "$mrc" -eq 0 ]] && jsvc=true
+        [[ "$mrc" -eq 1 ]] && jsvc=null
+        if [[ "$_KS_OK" -eq 1 ]]; then
+            if [[ "$_KS_COMPLETE" -eq 1 ]]; then jst=true; else jst=false; fi
+            jpk="\"$_KS_AUDIT\""; jsrc="\"$_KS_SRC\""
+            case "$_KS_FIX" in disabled) jfix=true ;; enabled) jfix=false ;; *) jfix=null ;; esac
+            jnm=$(_kmod_json_list "${nomod[@]}"); jun=$(_kmod_json_list "${unfin[@]}"); junk=$(_kmod_json_list "${unk[@]}")
+        else
+            rmod=null; rhdr=null
+        fi
+        json_out "{\"command\":\"repair-module\",\"ok\":$jok,\"module_loaded\":$jmod,\"service_active\":$jsvc,\"rc\":$mrc,\"helper\":\"current\",\"path\":\"helper\",\"repair_rc\":$hrc,\"finish_rc\":$jfrc,\"status_complete\":$jst,\"packages\":$jpk,\"source\":$jsrc,\"fix_disabled\":$jfix,\"kernels_without_module\":$jnm,\"unfinished_without_module\":$jun,\"kernels_unknown\":$junk,\"running_module_on_disk\":$rmod,\"running_headers\":$rhdr}"
+    fi
+    [[ "$ok" -eq 1 ]] && return 0
+    return 1
+}
+
+# diagnose: the module per boot kernel, the source and the packages, from the
+# helper's --status. INFO/WARN only, no FAIL: an old image kernel without
+# headers would otherwise keep the diagnosis red forever. Changes the
+# caller's ok and warn counters.
+_diag_kmod_facts() {
+    local k rel run mod hdr pkg flagged=0
+    _kmod_helper_class
+    case "$_KH_CLASS" in
+        current) ;;
+        broken)
+            _diag_line WARN "The module helper $AWG_ENSURE_HELPER does not run or answers oddly"
+            echo "        Fix: sudo bash install_amneziawg_en.sh --repair-module (the installer checks admission itself)"
+            warn=$((warn+1)); return 0 ;;
+        *)
+            _kmod_legacy_class
+            if [[ "$_KL" == dkms ]]; then
+                _diag_line WARN "The module helper is outdated or missing: it does not fix the source for kernel 7.0, the module per kernel is not checked"
+                echo "        Fix: sudo bash install_amneziawg_en.sh --repair-module (if the installer admits this path)"
+                warn=$((warn+1))
+            elif [[ "$_KL" == query ]]; then
+                _diag_line WARN "Could not query dpkg about the module packages: the module path is not determined"
+                warn=$((warn+1))
+            fi
+            return 0 ;;
+    esac
+    if [[ "$(id -u)" -ne 0 ]]; then
+        _diag_line INFO "Module per kernel: the check needs root (sudo bash $0 diagnose)"
+        return 0
+    fi
+    _kmod_status_run
+    if [[ "$_KS_OK" -ne 1 ]]; then
+        _diag_line WARN "Could not get the module state per kernel ($AWG_ENSURE_HELPER --status), details in $LOG_FILE"
+        warn=$((warn+1)); return 0
+    fi
+    case "$_KS_KIND" in
+        ppa) ;;
+        refused)
+            _diag_line WARN "repair-module is not admitted on this server (reason: $_KS_REASON)"
+            warn=$((warn+1)); return 0 ;;
+        *)
+            _diag_line INFO "The module did not come from the PPA (path: $_KS_KIND), no per-kernel check"
+            return 0 ;;
+    esac
+    [[ "$_KS_SRC" == foreign ]] && _diag_line INFO "The module source differs from the tested one: the helper does not apply the kernel 7.0 fix to it"
+    [[ "$_KS_FIX" == disabled ]] && _diag_line INFO "The source fix is turned off by hand (--revert); to allow it: sudo $AWG_ENSURE_HELPER --enable"
+    for k in "${_KS_KERNELS[@]}"; do
+        [[ "$k" =~ release=([^ ]+)\ running=([01])\ image=[01]\ module=([^ ]+)\ headers=([^ ]+)\ package=([^ ]+) ]] || continue
+        rel="${BASH_REMATCH[1]}" run="${BASH_REMATCH[2]}" mod="${BASH_REMATCH[3]}" hdr="${BASH_REMATCH[4]}" pkg="${BASH_REMATCH[5]}"
+        # Headers installed: installing them again does not help.
+        local _dfix="sudo apt install linux-headers-$rel, then sudo bash $0 repair-module (or remove that kernel)"
+        [[ "$hdr" == ok ]] && _dfix="sudo bash $0 repair-module (headers are installed; if the module is still missing, the reason will be in its output) or remove that kernel"
+        if [[ "$mod" == 0 && "$pkg" == unfinished ]]; then
+            _diag_line WARN "Unfinished kernel $rel has no AmneziaWG module: configuring it would make it bootable without the tunnel"
+            echo "        Fix: $_dfix"
+            warn=$((warn+1)); flagged=1
+        elif [[ "$run" -eq 1 && "$mod" == 0 ]]; then
+            # A loaded module outlives its file: the "module loaded" check
+            # above does not see this, and a reboot leaves no tunnel.
+            _diag_line WARN "The running kernel $rel has no AmneziaWG module file on disk: after a reboot there is no tunnel"
+            echo "        Fix: sudo bash $0 repair-module"
+            warn=$((warn+1)); flagged=1
+        elif [[ "$run" -eq 0 && "$mod" == 0 ]]; then
+            _diag_line WARN "Kernel $rel has no AmneziaWG module: do not boot into it"
+            echo "        Fix: $_dfix"
+            warn=$((warn+1)); flagged=1
+        elif [[ "$mod" == unknown ]]; then
+            _diag_line WARN "The module of kernel $rel could not be checked (its module directory is not readable)"
+            warn=$((warn+1)); flagged=1
+        fi
+        if [[ "$hdr" == broken ]]; then
+            _diag_line WARN "The headers link of kernel $rel is broken ($KMOD_MODULES_DIR/$rel/build): the module is not built for it"
+            warn=$((warn+1)); flagged=1
+        fi
+    done
+    case "$_KS_AUDIT" in
+        unfinished)
+            _diag_line WARN "Some packages are unfinished (dpkg --audit): a working tunnel does not mean apt is fixed"
+            echo "        Fix: sudo bash $0 repair-module"
+            warn=$((warn+1)); flagged=1 ;;
+        failed)
+            _diag_line WARN "dpkg --audit did not run: unfinished packages are not checked"
+            warn=$((warn+1)); flagged=1 ;;
+    esac
+    if [[ "$_KS_COMPLETE" -ne 1 ]]; then
+        _diag_line WARN "The module state per kernel was not determined in full, details in $LOG_FILE"
+        warn=$((warn+1)); flagged=1
+    fi
+    if [[ "$flagged" -eq 0 ]]; then
+        _diag_line OK "The module is on disk for every boot kernel, no unfinished packages"
+        ok=$((ok+1))
+    fi
+    return 0
+}
+
 _diagnose_carrier_known() {
     case "$1" in
         beeline_msk)            echo "3 6 40 89 50 250 random" ;;
@@ -1760,6 +2395,9 @@ diagnose_server() {
         echo "        Fix: sudo bash $0 repair-module"
         fail=$((fail+1))
     fi
+
+    # 1b. The module per boot kernel, the source, the packages (track K, kernel 7.0).
+    _diag_kmod_facts
 
     # 1a. Configuration generation, from the installation marker. It sits next
     # to the module version on purpose: a third-line module with a second-line
@@ -1918,7 +2556,30 @@ diagnose_server() {
         jmin=$(awk '/^[[:space:]]*jmin:/ {print $2; exit}' <<< "$_awg_show")
         jmax=$(awk '/^[[:space:]]*jmax:/ {print $2; exit}' <<< "$_awg_show")
         i1=$(awk -F': ' '/^[[:space:]]*i1:/ {print $2; exit}' <<< "$_awg_show")
-        _diag_line INFO "AWG params: Jc=${jc:-?} Jmin=${jmin:-?} Jmax=${jmax:-?} I1=${i1:-absent}"
+        # awg show prints the jc, jmin and jmax lines only when non-zero. When jc
+        # is absent but S or H lines are there, the interface runs with Jc = 0
+        # (and zero in any missing jmin/jmax), and that is checked against
+        # awg0.conf. Without S and H lines a missing jc proves nothing: Jc stays
+        # unknown, not zero. An unread interface takes the else branch below.
+        local _jc_note="" _cjc
+        if [[ -z "$jc" ]] && grep -qE '^[[:space:]]*(s[1-4]|h[1-4]):' <<< "$_awg_show"; then
+            jc=0
+            jmin="${jmin:-0}"
+            jmax="${jmax:-0}"
+            _jc_note=" (junk packets off)"
+        fi
+        _diag_line INFO "AWG params: Jc=${jc:-?}${_jc_note} Jmin=${jmin:-?} Jmax=${jmax:-?} I1=${i1:-absent}"
+        if [[ -z "$jc" ]]; then
+            _diag_line WARN "awg show prints no obfuscation parameters (no jc, S or H lines): values not checked"
+            warn=$((warn+1))
+        elif [[ -n "$_jc_note" ]]; then
+            _cjc=$(_conf_jc)
+            if [[ -n "$_cjc" && "$_cjc" != 0 ]]; then
+                _diag_line WARN "the interface runs with Jc=0, but awg0.conf has Jc=${_cjc}: the config is not applied"
+                echo "        Fix: sudo systemctl restart awg-quick@awg0"
+                warn=$((warn+1))
+            fi
+        fi
         # The kernel module does not compare Jmin with Jmax, and with Jmin above
         # Jmax it writes a junk packet past the end of a buffer sized Jmax
         # (amneziawg-linux-kernel-module#225). Our generator never produces such
@@ -2959,7 +3620,12 @@ case $COMMAND in
             # happened. error is human-readable text; decide by ok/rc.
             if [[ "$JSON_OUTPUT" -eq 1 ]]; then
                 _jrb=false; [[ "${_RESTORE_ROLLED_BACK:-0}" == "1" ]] && _jrb=true
-                json_out "{\"command\":\"restore\",\"ok\":false,\"error\":\"$(json_escape "${_JSON_ERR:-restore failed (see stderr)}")\",\"source\":\"$(json_escape "${_RESTORE_SOURCE:-}")\",\"applied\":false,\"rolled_back\":$_jrb,\"rc\":1}"
+                _jrc=""
+                if [[ "$_jrb" == true ]]; then
+                    _jrc=',"rollback_complete":true'
+                    [[ "${_RESTORE_ROLLBACK_COMPLETE:-1}" == "1" ]] || _jrc=',"rollback_complete":false'
+                fi
+                json_out "{\"command\":\"restore\",\"ok\":false,\"error\":\"$(json_escape "${_JSON_ERR:-restore failed (see stderr)}")\",\"source\":\"$(json_escape "${_RESTORE_SOURCE:-}")\",\"applied\":false,\"rolled_back\":$_jrb${_jrc},\"rc\":1}"
             fi
         fi
         ;;
@@ -3004,9 +3670,52 @@ case $COMMAND in
 
     repair-module|repair)
         # Explicit user-facing command: after a kernel upgrade the module may
-        # need a DKMS rebuild. Allow apt-installing kernel headers here
-        # (AWG_ALLOW_APT_IN_ENSURE=1) — the user explicitly requested repair.
+        # need a DKMS rebuild.
         log "Repairing amneziawg kernel module (may take up to 5 minutes — DKMS rebuild)..."
+        # The PPA path with a new helper (v5.37.1+, track K): build, load and
+        # configure through the helper, without ensure_amneziawg_kernel_module -
+        # it would bypass the helper's refusals (unlocked dkms autoinstall, apt).
+        _kmod_helper_class
+        _kh_path=legacy
+        case "$_KH_CLASS" in
+            current)
+                if [[ "$(id -u)" -ne 0 ]]; then
+                    _JSON_ERR="repair-module needs root: sudo bash $0 repair-module"; log_error "$_JSON_ERR"
+                    json_out "{\"command\":\"repair-module\",\"ok\":false,\"module_loaded\":null,\"service_active\":null,\"rc\":null,\"helper\":\"current\",\"path\":\"refused\",\"repair_rc\":null,\"finish_rc\":null,\"status_complete\":null,\"packages\":null,\"source\":null,\"fix_disabled\":null,\"kernels_without_module\":null,\"unfinished_without_module\":null,\"kernels_unknown\":null,\"running_module_on_disk\":null,\"running_headers\":null,\"error\":\"$(json_escape "$_JSON_ERR")\"}"
+                    exit 1
+                fi
+                _kh_rc=0; _kmod_repair_via_helper || _kh_rc=$?
+                if [[ "$_kh_rc" -ne 10 ]]; then
+                    if [[ "$_kh_rc" -ne 0 ]]; then
+                        _cmd_rc=1
+                        if [[ "$JSON_OUTPUT" -eq 1 && "$_JSON_EMITTED" -eq 0 ]]; then
+                            json_out "{\"command\":\"repair-module\",\"ok\":false,\"module_loaded\":null,\"service_active\":null,\"rc\":null,\"helper\":\"current\",\"path\":\"refused\",\"repair_rc\":null,\"finish_rc\":null,\"status_complete\":null,\"packages\":null,\"source\":null,\"fix_disabled\":null,\"kernels_without_module\":null,\"unfinished_without_module\":null,\"kernels_unknown\":null,\"running_module_on_disk\":null,\"running_headers\":null,\"error\":\"$(json_escape "${_JSON_ERR:-repair-module failed}")\"}"
+                        fi
+                    fi
+                    _kh_path=helper
+                fi ;;
+            broken)
+                _JSON_ERR="the module helper does not answer as expected"
+                log_error "The helper $AWG_ENSURE_HELPER is there, but does not run or answers oddly. Nothing changed. Update it: sudo bash install_amneziawg_en.sh --repair-module (the installer checks admission itself)."
+                json_out "{\"command\":\"repair-module\",\"ok\":false,\"module_loaded\":null,\"service_active\":null,\"rc\":null,\"helper\":\"broken\",\"path\":\"refused\",\"repair_rc\":null,\"finish_rc\":null,\"status_complete\":null,\"packages\":null,\"source\":null,\"fix_disabled\":null,\"kernels_without_module\":null,\"unfinished_without_module\":null,\"kernels_unknown\":null,\"running_module_on_disk\":null,\"running_headers\":null,\"error\":\"$(json_escape "$_JSON_ERR")\"}"
+                exit 1 ;;
+            *)
+                # No helper or a known old one: classify here.
+                _kmod_legacy_class
+                if [[ "$_KL" == query ]]; then
+                    _JSON_ERR="could not query dpkg"
+                    log_error "Could not query dpkg about the module packages. Nothing changed, try again later."
+                    json_out "{\"command\":\"repair-module\",\"ok\":false,\"module_loaded\":null,\"service_active\":null,\"rc\":null,\"helper\":\"$_KH_CLASS\",\"path\":\"refused\",\"repair_rc\":null,\"finish_rc\":null,\"status_complete\":null,\"packages\":null,\"source\":null,\"fix_disabled\":null,\"kernels_without_module\":null,\"unfinished_without_module\":null,\"kernels_unknown\":null,\"running_module_on_disk\":null,\"running_headers\":null,\"error\":\"$(json_escape "$_JSON_ERR")\"}"
+                    exit 1
+                fi
+                if [[ "$_KL" == dkms ]]; then
+                    log_warn "The module helper is outdated or missing: it does not fix the source for kernel 7.0. Update it: sudo bash install_amneziawg_en.sh --repair-module (if the installer admits this path). Now - the previous way of repair."
+                fi ;;
+        esac
+        # The previous v5.37.0 path: the ARM prebuilt, the pinned 2.0, no
+        # package, an old helper. The block below is not re-indented on purpose
+        # (a diff that shows the change).
+        if [[ "$_kh_path" == legacy ]]; then
         AWG_ALLOW_APT_IN_ENSURE=1 ensure_amneziawg_kernel_module full; _mod_rc=$?
         _jmod=true; _jsvc=false
         case "$_mod_rc" in
@@ -3030,7 +3739,9 @@ case $COMMAND in
         if [[ "$JSON_OUTPUT" -eq 1 ]]; then
             _jok=false; [[ "$_cmd_rc" -eq 0 ]] && _jok=true
             # rc here = ensure_amneziawg_kernel_module code (0/1/2), not the exit code.
-            json_out "{\"command\":\"repair-module\",\"ok\":$_jok,\"module_loaded\":$_jmod,\"service_active\":$_jsvc,\"rc\":$_mod_rc}"
+            # The helper's facts were not collected on this path - null, not false.
+            json_out "{\"command\":\"repair-module\",\"ok\":$_jok,\"module_loaded\":$_jmod,\"service_active\":$_jsvc,\"rc\":$_mod_rc,\"helper\":\"$_KH_CLASS\",\"path\":\"legacy\",\"repair_rc\":null,\"finish_rc\":null,\"status_complete\":null,\"packages\":null,\"source\":null,\"fix_disabled\":null,\"kernels_without_module\":null,\"unfinished_without_module\":null,\"kernels_unknown\":null,\"running_module_on_disk\":null,\"running_headers\":null}"
+        fi
         fi
         ;;
 

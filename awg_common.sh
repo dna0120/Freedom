@@ -3,8 +3,8 @@
 # ==============================================================================
 # Shared function library for AmneziaWG 2.0
 # Author: @dna0120
-# Version: 5.37.0
-# Date: 2026-09-28
+# Version: 5.37.1
+# Date: 2026-10-13
 # Repository: https://github.com/dna0120/Freedom
 # ==============================================================================
 #
@@ -24,7 +24,7 @@ KEYS_DIR="${KEYS_DIR:-$AWG_DIR/keys}"
 # drifted apart (one file updated, the other not) - otherwise the mismatch shows
 # up as a "command not found" somewhere random. Bumped with the other versions.
 # shellcheck disable=SC2034  # used by the manage script after sourcing
-AWG_COMMON_VERSION="5.37.0"
+AWG_COMMON_VERSION="5.37.1"
 
 # --- Auto-cleanup of temporary files ---
 # NOTE: trap is NOT set here to avoid overwriting the caller's trap handler.
@@ -448,6 +448,11 @@ _aip_wants_v6_sink() {
 #
 # Idempotence is mandatory: regen runs repeatedly, including over a dual-stack
 # client whose IPv6 part has already been built.
+#
+# CLIENT_IPV6_DIRECT=1 (installer flag --client-ipv6-direct) leaves a mode-2
+# list with IPv4 only: the device's IPv6 goes directly, around the tunnel
+# (PR #260). 0.0.0.0/0 keeps its ::/0 even with the key: without it iOS
+# AmneziaVPN does not bring the tunnel up, and the installer refuses that mix.
 _append_ipv6_full_tunnel_route() {
     local list="$1"
     # The decision is taken on a normalised copy, so the normalised copy is what
@@ -463,6 +468,8 @@ _append_ipv6_full_tunnel_route() {
         if _is_full_tunnel "$list"; then
             if _aip_has_token "$list" "0.0.0.0/0"; then
                 printf '%s, ::/0' "$list"
+            elif _aip_direct_applies "$list"; then
+                printf '%s' "$list"
             else
                 printf '%s, 2000::/3' "$list"
             fi
@@ -472,6 +479,68 @@ _append_ipv6_full_tunnel_route() {
         return 0
     fi
     printf '%s' "$list"
+}
+
+# _client_ipv6_direct : whether CLIENT_IPV6_DIRECT is on (client IPv6 directly).
+# 0 or 1. Any other value is named and read as 0: the route stays, so a typo in
+# the key does not let IPv6 go around the tunnel silently.
+_client_ipv6_direct() {
+    case "${CLIENT_IPV6_DIRECT:-0}" in
+        1) return 0 ;;
+        0) return 1 ;;
+        *)
+            log_warn "CLIENT_IPV6_DIRECT='${CLIENT_IPV6_DIRECT}' in ${CONFIG_FILE:-awgsetup_cfg.init} is not valid (use 0 or 1) - keeping the IPv6 route for clients."
+            return 1
+            ;;
+    esac
+}
+
+# _aip_same_set <list> <list> : the same set of routes (order and spaces do
+# not matter). An empty list matches nothing.
+_aip_same_set() {
+    local a b
+    a=$(_aip_tokens "$1" | LC_ALL=C sort -u) || return 1
+    b=$(_aip_tokens "$2" | LC_ALL=C sort -u) || return 1
+    [[ -n "$a" && "$a" == "$b" ]]
+}
+
+# _aip_direct_applies <list> : CLIENT_IPV6_DIRECT covers this list - the server
+# is in mode 2, the list equals its list, and the key is on. Mode 3 and a full
+# tunnel written by hand (--allowed-ips, modify) are left alone: the key is
+# about the mode the server chose, not about any list of that shape.
+_aip_direct_applies() {
+    [[ "${ALLOWED_IPS_MODE:-}" == "2" ]] || return 1
+    _aip_same_set "$1" "${ALLOWED_IPS:-}" || return 1
+    _client_ipv6_direct
+}
+
+# _aip_drop_our_v6 <client list> <server list> : with CLIENT_IPV6_DIRECT=1
+# prints the list without OUR IPv6 route, otherwise the list as is. Ours is
+# exactly one IPv6 element, 2000::/3 (since v5.36.2) or ::/0 (v5.31.0-v5.36.1),
+# next to an IPv4 part that equals the server list as a set of routes, while the
+# server list is a full tunnel without 0.0.0.0/0 (mode 2). Anything else is the
+# user's choice (--allowed-ips, modify) and regen leaves it alone. The order of
+# the IPv4 part is kept.
+_aip_drop_our_v6() {
+    local list="$1" base="$2" toks v6 mine srv tok out="" rc
+    toks=$(_aip_tokens "$list") || return 1
+    # Code 1 from grep is "no lines", an answer; 2 and above is a failure.
+    v6=$(grep -F ':' <<< "$toks"); rc=$?
+    (( rc > 1 )) && return 1
+    if [[ ( "$v6" != "::/0" && "$v6" != "2000::/3" ) || -z "$base" || "$base" == *:* ]] \
+       || _aip_has_token "$base" "0.0.0.0/0" || ! _is_full_tunnel "$base"; then
+        printf '%s' "$list"
+        return 0
+    fi
+    mine=$(grep -vF ':' <<< "$toks"); rc=$?
+    (( rc > 1 )) && return 1
+    [[ -n "$mine" ]] || { printf '%s' "$list"; return 0; }
+    srv=$(_aip_tokens "$base" | LC_ALL=C sort -u) || return 1
+    [[ "$(LC_ALL=C sort -u <<< "$mine")" == "$srv" ]] || { printf '%s' "$list"; return 0; }
+    while IFS= read -r tok; do
+        out+="${out:+, }${tok}"
+    done <<< "$mine"
+    printf '%s' "$out"
 }
 
 # _aip_migrate_legacy_v6 <client list> <server list> : prints the list with our
@@ -944,6 +1013,172 @@ _sanitize_awg_dkms_conf() {
     done
 }
 
+# Kernel 7.0 with the udp_tunnel backport (Ubuntu 26.04 7.0.0-38, 24.04 HWE):
+# the AmneziaWG module from the PPA does not build for such a kernel. This
+# function identifies the module source by the exact SHA-256 of
+# compat/compat.h and applies the upstream PR #218 fix
+# (amneziawg-linux-kernel-module, commit 62189503fa51) only to the known base;
+# any other source (someone else's edit, the pinned 2.0 source on kernels
+# < 6.7, a source fixed in the PPA - that one is patched or foreign) is left
+# alone.
+# Usage: awg_kmod_compat_fix check|apply|revert <DKMS source dir> [diff]
+#   check  - class: base | patched | foreign | absent (no compat.h) | unsafe
+#            (compat.h is a symlink or not a regular file); exit 0
+#   apply  - base -> applied; the result must hash to PATCHED, otherwise the
+#            source is untouched. patched -> already, foreign and absent are
+#            printed as is with exit 0: the word decides, not the code.
+#            unsafe exits 1.
+#   revert - patched -> reverted, only if compat.h.awg-base is exactly base;
+#            base -> already, absent -> absent (exit 0); anything else is
+#            error:<reason> (usually error:revert) or unsafe (exit 1)
+# A failure is error:<reason> with exit 1; a wrong directory (missing, or
+# compat is not a directory or is a symlink) is error:src.
+# Stdout always carries one word, patch output goes to stderr. If
+# compat.h.awg-base is a symlink, a directory or a FIFO, apply on base and
+# revert on patched stop with error:backup; the backup type is checked again
+# before each read of it, and it is written with mv -T, which never puts a
+# file into a directory and replaces a symlink without following it. All
+# intermediate files live in a temporary directory .awg-kmod.XXXXXX inside
+# compat/; the hash of compat.h is checked again right before it is
+# replaced, and the swap is mv -T from that directory into compat/ (same
+# filesystem, so the rename is atomic). Mode and owner come from the current
+# compat.h (on apply and on revert). The temporary directory is removed at
+# the end of the call; if that fails, the word and the exit code stay as
+# they are (a successful swap is not rolled back) and a warning goes to
+# stderr. A directory left by a killed call stays (it does not affect the
+# build); the function does not remove other directories, because a name
+# cannot tell an abandoned one from a live one.
+# Only apply and revert take the lock: flock on $AWG_KMOD_LOCK (default
+# /run/lock/amneziawg-kmod.lock; a symlink or a non-regular file is
+# error:lock), waiting $AWG_KMOD_LOCK_WAIT seconds: 0 or an integer 1-99999
+# without leading zeros, unset or empty means 0 (do not wait), anything else
+# is error:usage; check ignores it. A caller that already holds this lock
+# and serialises its own calls sets AWG_KMOD_LOCK_HELD=1 for that call only:
+# a second descriptor on the same file in one process would get error:busy
+# at once or after the wait. dpkg
+# does not take this lock, so the hash re-check narrows the race with a
+# package unpack but does not remove it.
+# The function body is byte-identical in awg_common.sh, awg_common_en.sh and
+# in the amneziawg-ensure-module helper of both installers (a test checks it).
+awg_kmod_compat_fix() {
+    local mode="${1:-}" src="${2:-}" diff="${3:-}"
+    local base_sha=b14346040ce0188c47e2db2baad1a4f21aa784510f6c95bbb4aa58d5bbe691c9
+    local fixed_sha=8d47a358b4df0b2187788ce6f88ad63128218de1be22c78b263ef3e5d770c26b
+    local lock="${AWG_KMOD_LOCK:-/run/lock/amneziawg-kmod.lock}"
+    local wait="${AWG_KMOD_LOCK_WAIT:-0}"
+    local f="${src}/compat/compat.h" bak="${src}/compat/compat.h.awg-base"
+    local cls="" sha="" out="" rc=1 fd="" stage=""
+    case "$mode" in
+        check|apply|revert) ;;
+        *) printf '%s\n' 'error:usage'; return 1 ;;
+    esac
+    if [[ "$mode" != check && ! "$wait" =~ ^(0|[1-9][0-9]{0,4})$ ]]; then
+        printf '%s\n' 'error:usage'; return 1
+    fi
+    while :; do
+        if [[ -z "$src" ]]; then out='error:usage'; break; fi
+        if [[ ! -d "$src" || -L "${src}/compat" ]] || [[ -e "${src}/compat" && ! -d "${src}/compat" ]]; then
+            out='error:src'; break
+        fi
+        if [[ "$mode" != check && "${AWG_KMOD_LOCK_HELD:-0}" != 1 ]]; then
+            if ! command -v flock >/dev/null 2>&1; then out='error:no-flock'; break; fi
+            if [[ -L "$lock" ]] || [[ -e "$lock" && ! -f "$lock" ]]; then out='error:lock'; break; fi
+            if ! { command exec {fd}>>"$lock"; } 2>/dev/null; then fd=""; out='error:lock'; break; fi
+            if [[ "$wait" -eq 0 ]]; then
+                if ! flock -n "$fd"; then out='error:busy'; break; fi
+            elif ! flock -w "$wait" "$fd"; then
+                out='error:busy'; break
+            fi
+        fi
+        if [[ -L "$f" ]]; then
+            cls=unsafe
+        elif [[ ! -e "$f" ]]; then
+            cls=absent
+        elif [[ ! -f "$f" ]]; then
+            cls=unsafe
+        elif ! sha=$(sha256sum -- "$f" 2>/dev/null); then
+            out='error:read'; break
+        else
+            sha="${sha%% *}"
+            if [[ "$sha" == "$base_sha" ]]; then cls=base
+            elif [[ "$sha" == "$fixed_sha" ]]; then cls=patched
+            else cls=foreign
+            fi
+        fi
+        if [[ "$mode" == check ]]; then out="$cls"; rc=0; break; fi
+        if [[ "$cls" == unsafe ]]; then out='unsafe'; break; fi
+        if [[ "$cls" == absent ]]; then out='absent'; rc=0; break; fi
+        if [[ "$mode" == revert ]]; then
+            if [[ "$cls" == base ]]; then out='already'; rc=0; break; fi
+            if [[ "$cls" != patched ]]; then out='error:revert'; break; fi
+            if [[ -L "$bak" ]] || [[ -e "$bak" && ! -f "$bak" ]]; then out='error:backup'; break; fi
+            if [[ ! -f "$bak" ]]; then out='error:revert'; break; fi
+            if ! sha=$(sha256sum -- "$bak" 2>/dev/null) || [[ "${sha%% *}" != "$base_sha" ]]; then
+                out='error:revert'; break
+            fi
+            if ! stage=$(mktemp -d "${src}/compat/.awg-kmod.XXXXXX" 2>/dev/null); then
+                stage=""; out='error:tmp'; break
+            fi
+            if [[ -L "$bak" ]] || [[ -e "$bak" && ! -f "$bak" ]]; then out='error:backup'; break; fi
+            if ! cp -- "$bak" "${stage}/new" 2>/dev/null; then out='error:copy'; break; fi
+            if ! sha=$(sha256sum -- "${stage}/new" 2>/dev/null) || [[ "${sha%% *}" != "$base_sha" ]]; then
+                out='error:copy'; break
+            fi
+            if ! chown --reference="$f" -- "${stage}/new" 2>/dev/null \
+                    || ! chmod --reference="$f" -- "${stage}/new" 2>/dev/null; then
+                out='error:perm'; break
+            fi
+            if [[ -L "$f" || ! -f "$f" ]] || ! sha=$(sha256sum -- "$f" 2>/dev/null) \
+                    || [[ "${sha%% *}" != "$fixed_sha" ]]; then
+                out='error:changed'; break
+            fi
+            if ! mv -fT -- "${stage}/new" "$f" 2>/dev/null; then out='error:mv'; break; fi
+            out='reverted'; rc=0; break
+        fi
+        if [[ "$cls" == patched ]]; then out='already'; rc=0; break; fi
+        if [[ "$cls" == foreign ]]; then out='foreign'; rc=0; break; fi
+        if [[ -z "$diff" || ! -f "$diff" || ! -r "$diff" ]]; then out='error:no-diff'; break; fi
+        if ! command -v patch >/dev/null 2>&1; then out='error:no-patch'; break; fi
+        if ! stage=$(mktemp -d "${src}/compat/.awg-kmod.XXXXXX" 2>/dev/null); then
+            stage=""; out='error:tmp'; break
+        fi
+        if ! cp -- "$f" "${stage}/in" 2>/dev/null; then out='error:copy'; break; fi
+        if ! sha=$(sha256sum -- "${stage}/in" 2>/dev/null) || [[ "${sha%% *}" != "$base_sha" ]]; then
+            out='error:changed'; break
+        fi
+        if ! patch --forward --batch --fuzz=0 --no-backup-if-mismatch \
+                --reject-file="${stage}/rej" -o "${stage}/new" "${stage}/in" <"$diff" >&2; then
+            out='error:patch'; break
+        fi
+        if ! sha=$(sha256sum -- "${stage}/new" 2>/dev/null) || [[ "${sha%% *}" != "$fixed_sha" ]]; then
+            out='error:result'; break
+        fi
+        if ! chown --reference="$f" -- "${stage}/new" 2>/dev/null \
+                || ! chmod --reference="$f" -- "${stage}/new" 2>/dev/null; then
+            out='error:perm'; break
+        fi
+        if [[ -L "$bak" ]] || [[ -e "$bak" && ! -f "$bak" ]]; then out='error:backup'; break; fi
+        if ! sha=$(sha256sum -- "$bak" 2>/dev/null) || [[ "${sha%% *}" != "$base_sha" ]]; then
+            if ! cp -- "${stage}/in" "${stage}/bak" 2>/dev/null \
+                    || ! mv -fT -- "${stage}/bak" "$bak" 2>/dev/null; then
+                out='error:backup'; break
+            fi
+        fi
+        if [[ -L "$f" || ! -f "$f" ]] || ! sha=$(sha256sum -- "$f" 2>/dev/null) \
+                || [[ "${sha%% *}" != "$base_sha" ]]; then
+            out='error:changed'; break
+        fi
+        if ! mv -fT -- "${stage}/new" "$f" 2>/dev/null; then out='error:mv'; break; fi
+        out='applied'; rc=0; break
+    done
+    if [[ -n "$stage" ]] && ! rm -rf -- "$stage" 2>/dev/null; then
+        printf 'awg_kmod_compat_fix: cannot remove %s\n' "$stage" >&2 || :
+    fi
+    if [[ -n "$fd" ]]; then command exec {fd}>&- || :; fi
+    printf '%s\n' "$out"
+    return "$rc"
+}
+
 # Install a kernel headers package via a distro-aware fallback chain.
 # Argument: kernel version (defaults to $(uname -r)).
 # Returns: 0 if at least one candidate installed successfully, 1 if all failed.
@@ -1192,10 +1427,10 @@ ensure_amneziawg_kernel_module() {
 # Parses only allowed keys in KEY=VALUE or export KEY=VALUE format
 safe_load_config() {
     local config_file="${1:-$CONFIG_FILE}"
-    # CLIENT_DNS lives only in the file: without this reset a variable from root's
-    # environment (CLIENT_DNS=... manage add) would silently reach new clients on
-    # installs whose file has no such line yet.
-    unset CLIENT_DNS
+    # CLIENT_DNS and CLIENT_IPV6_DIRECT live only in the file: without this reset a
+    # variable from root's environment (CLIENT_DNS=... manage add) would silently
+    # reach new clients on installs whose file has no such line yet.
+    unset CLIENT_DNS CLIENT_IPV6_DIRECT
     if [[ ! -f "$config_file" ]]; then return 1; fi
 
     local line key value first_line=1
@@ -1223,17 +1458,22 @@ safe_load_config() {
                 DISABLE_IPV6|ALLOWED_IPS_MODE|ALLOWED_IPS|AWG_ENDPOINT|AWG_MTU|\
                 AWG_Jc|AWG_Jmin|AWG_Jmax|AWG_S1|AWG_S2|AWG_S3|AWG_S4|\
                 AWG_H1|AWG_H2|AWG_H3|AWG_H4|AWG_I1|AWG_I2|AWG_I3|AWG_I4|AWG_I5|AWG_PRESET|NO_TWEAKS|NO_CPS|KEEP_PACKAGES|\
-                AWG_APPLY_MODE|ALLOW_IPV6_TUNNEL|IPV6_SUBNET|SERVER_HAS_NATIVE_IPV6|PREV_AWG_PORT|CLIENT_ISOLATION|CLIENT_ISOLATION_NET|AWG_PROTOCOL|AWG_CPA|AWG_SERVER_NAME|ENABLE_BBR|CLIENT_DNS_1|CLIENT_DNS_2)
+                AWG_APPLY_MODE|ALLOW_IPV6_TUNNEL|IPV6_SUBNET|SERVER_HAS_NATIVE_IPV6|PREV_AWG_PORT|CLIENT_ISOLATION|CLIENT_ISOLATION_NET|AWG_PROTOCOL|AWG_CPA|AWG_SERVER_NAME|ENABLE_BBR|CLIENT_DNS_1|CLIENT_DNS_2|CLIENT_IPV6_DIRECT)
                     export "$key=$value"
                     ;;
                 *)
                     # A CLIENT_DNS line the parser did not recognise is named: otherwise
                     # new clients would silently get the default DNS.
                     if [[ "${key^^}" == CLIENT_DNS ]]; then log_warn "CLIENT_DNS line in $config_file not parsed: '$line'. Use the form export CLIENT_DNS='10.9.9.1' with no indent and no spaces around =. New clients will get the default DNS."; fi
+                    # The same for CLIENT_IPV6_DIRECT: otherwise the line that switches the key
+                    # off would silently not be read, and client IPv6 would keep going around the tunnel.
+                    if [[ "${key^^}" == CLIENT_IPV6_DIRECT ]]; then log_warn "CLIENT_IPV6_DIRECT line in $config_file not parsed: '$line'. Use the form export CLIENT_IPV6_DIRECT=1 (or =0) with no indent and no spaces around =."; fi
                     ;;
             esac
         elif [[ "${line^^}" == *CLIENT_DNS* ]]; then
             log_warn "CLIENT_DNS line in $config_file not parsed: '$line'. Use the form export CLIENT_DNS='10.9.9.1' with no indent and no spaces around =. New clients will get the default DNS."
+        elif [[ "${line^^}" == *CLIENT_IPV6_DIRECT* ]]; then
+            log_warn "CLIENT_IPV6_DIRECT line in $config_file not parsed: '$line'. Use the form export CLIENT_IPV6_DIRECT=1 (or =0) with no indent and no spaces around =."
         fi
     done < "$config_file"
 }
@@ -1348,6 +1588,473 @@ awg_restore_generation_notice() {
         log_warn "Protocol generation in the backup: ${backup_gen}, in the current installation: ${live_gen}. After the restore the server will be generation ${backup_gen}; client profiles of the other generation will not connect to it."
     fi
     return 0
+}
+
+# ── Third-line environment check for restore (Р6) ────────────────────────────
+# Restoring a 3.1 backup onto a host whose module or tools do not understand the
+# third line would bring the service up while clients could not connect (a
+# second-line module silently accepts the header protection key). So restore
+# into 3.1 checks the environment with THE SAME code the installer runs at step 3.
+# 🔴 The functions below are VERBATIM copies from install_amneziawg_en.sh: the
+# installer needs the probe at step 3, and this library arrives at step 5, it
+# cannot be sourced earlier. A test pins the copies as equal
+# (test_awg31_restore_environment.bats); edit both copies together. The reasoning
+# lives in the comments above the functions in the installer.
+
+_kernel_supports_awg3() {
+    # Returns 0 if the kernel version is >= 6.7 - there we take the module from the
+    # PPA as is. Returns 1 if the kernel is older than 6.7 - there we go the pinned
+    # 2.0 route.
+    # ⚠️ The name is historical, do not read it literally. The 6.7 threshold comes
+    # from 30-31 jul 2026: the 3.0 code called nla_put_uint, absent before mainline
+    # v6.7, and on 6.1 (Debian 12) the build died with 'implicit declaration of
+    # nla_put_uint'. Upstream fixed that on 31 jul (v3.0.20260731-04), and the 3.0
+    # module DOES build on 6.1 now - verified on a stand on 1 aug. The threshold is
+    # kept deliberately: within a day the 3.0 line managed to break and fix the
+    # build on old kernels specifically, so that is where it is least proven, while
+    # the pinned 2.0 is checked against an immutable commit. Drop the threshold
+    # after validating 3.0, not because the build passes again.
+    # Arg $1: kernel release (default uname -r). An unparseable version is treated
+    # as "NOT supported" -> pinned 2.0 (it builds on ANY of our kernels, so the
+    # conservative choice never breaks connectivity, it only withholds 3.0 features
+    # which H0 does not ship anyway).
+    # Pure function with no external deps (bats: extracted via sed-range + source).
+    local kver="${1:-$(uname -r)}" kmaj kmin
+    local min_maj=6 min_min=7
+    if [[ "$kver" =~ ^([0-9]+)\.([0-9]+) ]]; then
+        kmaj=${BASH_REMATCH[1]}; kmin=${BASH_REMATCH[2]}
+    else
+        return 1
+    fi
+    if (( kmaj > min_maj || (kmaj == min_maj && kmin >= min_min) )); then
+        return 0
+    fi
+    return 1
+}
+
+_awg31_host_arch() {
+    local a=""
+    a=$(dpkg --print-architecture 2>/dev/null) || a=""
+    [[ -z "$a" ]] && a=$(uname -m 2>/dev/null)
+    printf '%s' "$a"
+}
+
+awg31_tools_support() {
+    local usage="" rc=0
+    command -v awg >/dev/null 2>&1 || return 1
+    # 🔴 -k IS REQUIRED, not decoration. Without it timeout sends TERM and
+    # WAITS: a wrapper that ignores the signal is not bounded at all, and
+    # step 3 hangs forever without printing a thing. The verdict would stay
+    # correct (124 is not 1, so tools_old), but an unattended install would
+    # stall. Found by review of this pull request.
+    # </dev/null for the same reason every read in this project uses
+    # /dev/tty: the probe must not eat the rest of a script fed through a
+    # pipe.
+    usage=$(timeout -k 1 5 awg set </dev/null 2>&1); rc=$?
+    (( rc == 1 )) || return 1
+    # 🔴 BOTH names, not one. The probe sends the header protection key and the
+    # padding range in a single command. A tools build that knows only the first
+    # would pass this gate and then run into the probe, whose text talks about
+    # permissions and netlink - while the cure is a tools upgrade, for which
+    # tools_old already carries the right advice. Measured 19 sep 2026: the
+    # usage of real 3.1 tools (ee0f0a9, tag v3.1.20260812) prints both names
+    # next to each other, so this does not turn away a healthy build.
+    [[ "$usage" == *header-protection-key* && "$usage" == *content-padding-addition* ]]
+}
+
+awg31_module_support() {
+    local verdict=""
+    verdict=$(_awg31_module_probe)
+    case "$verdict" in
+        ok)    return 0 ;;
+        line2) return 1 ;;
+        *)     return 2 ;;
+    esac
+}
+
+_awg31_module_probe() (
+    case $- in *x*) set +x ;; esac
+    umask 077
+    # 🔴 The probe can refuse for a good many different reasons, and until this
+    # was added a person learned none of them. There is deliberately NO number
+    # here: it has already drifted from the code twice, and the second time it
+    # was raised to the count of the PREVIOUS commit - the very commit that had
+    # added another reason. The code can be asked (`grep -c '_probe_say "'` over
+    # the function body), while a written number rots in silence. What matters
+    # is not the count but the invariant: no refusal is silent on any path the
+    # probe chooses ITSELF - the signal handler below is silent on purpose, and
+    # that is the only exception.
+    # Why none of them were learned before: the verdict goes to stdout and
+    # everything else was thrown away. stdout is taken, but stderr is free and
+    # is not captured. The key never reaches it: the module is handed a PATH to
+    # a file, and the showconf output does not go into diagnostics at all.
+    # Through log_debug when it exists, to respect --verbose and the log format.
+    _probe_say() {
+        if type log_debug >/dev/null 2>&1; then
+            # >&2: in manage log_debug writes to stdout, and the probe's stdout is the verdict
+            log_debug "module probe: $1" >&2
+        else
+            printf 'module probe: %s\n' "$1" >&2
+        fi
+    }
+    local ifn="" kf="" rec="" key="" out="" line="" ctl="" rc=0 arc=0 i=0 made=0 cleaned=0
+    local klines=() kraw="" kbytes="" krc=0
+    local seen=0 hpk=0 cpa=0 hpk_name=0 cpa_name=0
+    command -v ip >/dev/null 2>&1  || { _probe_say "the ip command was not found"; printf 'failed'; exit 0; }
+    command -v awg >/dev/null 2>&1 || { _probe_say "the awg command was not found"; printf 'failed'; exit 0; }
+
+    kf=$(mktemp "${TMPDIR:-/tmp}/awg31probe.$$.XXXXXX" 2>/dev/null) || { _probe_say "a temporary file could not be created in ${TMPDIR:-/tmp}"; printf 'failed'; exit 0; }
+    # 🔴 The name of the interface goes into a FILE, not into a variable. The
+    # installer cleanup lives in the parent shell, the probe is called through
+    # $( ), and anything assigned inside is lost with the subshell. A file
+    # outlives both the subshell and a SIGKILL of the probe itself, which is also
+    # what makes it the marker for "a probe happened here". ⚠️ If the whole
+    # installer gets a SIGKILL, the record and the interface stay until a reboot:
+    # the next run only looks for records of its own $$.
+    rec="${TMPDIR:-/tmp}/awg31probe.$$.iface"
+    # The cleanup has to survive both an ordinary exit and a signal: the machine
+    # must not keep an interface of ours after the probe.
+    _probe_cleanup() {
+        # Idempotent, following _install_cleanup: on a signal the cleanup runs
+        # from the handler and then once more on EXIT, and the second call has
+        # to be a no-op. Otherwise Ctrl-C costs another `ip link del` against an
+        # interface that is already gone - up to five more seconds of silence in
+        # exactly the wedged-netlink state the probe exists to refuse over.
+        [[ "$cleaned" -eq 1 ]] && return 0
+        cleaned=1
+        rm -f "$kf" 2>/dev/null
+        if [[ "$made" -eq 1 ]]; then
+            # The record is dropped ONLY after a delete that worked. If it
+            # did not, the record stays, the installer cleanup picks the
+            # interface up and says so out loud. Saying it from here is not
+            # possible: stdout carries the verdict.
+            if timeout -k 1 5 ip link del "$ifn" >/dev/null 2>&1; then
+                rm -f "$rec" 2>/dev/null
+            fi
+        fi
+    }
+    # 🔴 A signal needs an EXPLICIT exit, not just the cleanup. Without it the
+    # body carries on after the interrupted command - sending awg set and
+    # showconf to an interface the trap has just removed - and the cleanup runs
+    # a second time on EXIT. The same class that is already fixed for the
+    # installer itself above.
+    trap '_probe_cleanup' EXIT
+    trap '_probe_cleanup; printf "failed"; exit 0' INT TERM HUP
+
+    timeout -k 1 5 awg genkey </dev/null > "$kf" 2>/dev/null || { _probe_say "awg genkey did not produce a key"; printf 'failed'; exit 0; }
+    # 🔴 But BOTH lines have to be read. `read` takes only the first, while the
+    # module is handed the WHOLE file: a file with a correct first line and junk
+    # behind it would pass the shape check, the tool would refuse it, and the
+    # refusal at control step 2 would call a healthy module second line - exactly
+    # the defect this probe exists to prevent. The old `tr` joined the whole file
+    # and caught such a tail; the library (_awg_hpk_file_valid) also checks the
+    # size of the file.
+    # 🔴 The FILE itself is validated, not a cleaned copy of it. This is the
+    # FOURTH visit to this one place, and the root was the same all four times:
+    # I compared what I had READ and normalised, while the tool is handed the
+    # file AS IT IS.
+    # 🔴 This one was worse than the three before it. The checks CITED the rule
+    # that the library demands exactly 45 bytes, and then never counted a byte:
+    # the expected string was rebuilt out of data bash had already normalised
+    # and compared with itself. Measured 20 sep 2026: a 46-byte file shaped
+    # `<44 base64><NUL><LF>` passed ALL THREE checks, because `mapfile` and
+    # `read -N` both drop a NUL. The tool then refused the file, the refusal at
+    # control step 2 called a healthy module second line, and its owner went off
+    # to rebuild a module that was fine - the exact defect this probe exists to
+    # prevent.
+    # 🔴 So the size is measured the way the library measures it
+    # (_awg_hpk_file_valid): with `wc -c`. Builtins CANNOT do this - bash cannot
+    # hold a NUL in a variable at all, so every reader loses it in silence. The
+    # old promise that the key path runs no external command is withdrawn
+    # DELIBERATELY: the key VALUE still never leaves the file - it is fed on
+    # stdin, only a number comes back, and without counting the bytes that
+    # promise was costing a verdict.
+    # ⚠️ Exactly about the PATH, because the previous wording promised more than
+    # it kept: the path DOES reach argv, both here in `timeout`/`sh` and below in
+    # `awg set`, which is handed it on purpose. It is not a secret: it is a random
+    # name from `mktemp` whose only job is to make a race hard, not to hide.
+    # What each check catches (measured 20 sep 2026, one file per corrupt
+    # genkey stub; again NO number here, for the same reason):
+    #   not 45 bytes          -> a NUL, and any byte the readers cannot see;
+    #   not one line          -> two lines and junk; it gives the better message;
+    #   file is not line + \n -> no trailing newline;
+    #   shape is wrong        -> a carriage return, junk inside the line.
+    # 🔴 The checks overlap ON PURPOSE, and "one each" would be untrue: two
+    # lines are caught by the first and by the second alike. Removing one of two
+    # overlapping guards leaves the verdict where it was - measured by mutation,
+    # not asserted.
+    # 🔴 The TRIPLE first, and it answers WITHOUT OPENING the file. That is not
+    # decoration: a `timeout` around `wc` does NOT bound the open, because the
+    # redirection `< "$kf"` is performed by the CALLING shell before `timeout`
+    # ever runs. Measured 21 sep 2026: `timeout -k 1 5 wc -c < FIFO` NEVER
+    # returns, while the same command with the redirection INSIDE the bounded
+    # process honestly gives 124 after five seconds. So a planted FIFO hung the
+    # probe for good, and silently - the exact state it was written to avoid.
+    # Both things are done here: the triple answers first and cheaply, and the
+    # redirection moved inside the bound, which closes the race between the test
+    # and the open. The same trap is described above for `read -t`, in `_install_cleanup`.
+    [[ -f "$kf" && ! -L "$kf" && -r "$kf" ]] || { _probe_say "the key file is not a regular readable file"; printf 'failed'; exit 0; }
+    kbytes=$(timeout -k 1 5 sh -c 'wc -c < "$0"' "$kf" 2>/dev/null)
+    krc=$?
+    # 🔴 Only BLANKS are stripped - spaces and tabs, `[[:blank:]]` - and the
+    # exit status is read. Not `[[:space:]]`: a newline is whitespace too, so
+    # `4\n5` would collapse into "45", the very joining this was moved away from. The first
+    # form threw away every non-digit (`${kbytes//[^0-9]/}`) and ignored the
+    # status: a `wc` that printed `4x5` and failed then collapsed into "45" and
+    # opened a path to a WRONG verdict - the guard put there to catch an extra
+    # byte let that byte through itself. Whitespace still has to go: not every
+    # `wc` prints the number without padding.
+    kbytes="${kbytes//[[:blank:]]/}"
+    # The comparison is EXACT precisely because the right-hand side is a literal:
+    # put a variable or a pattern there and the exactness disappears in silence,
+    # with no test noticing.
+    [[ $krc -eq 0 && "$kbytes" == 45 ]] || { _probe_say "the key file is not exactly 45 bytes (code $krc, bytes: ${kbytes:-unknown})"; printf 'failed'; exit 0; }
+    mapfile -t klines 2>/dev/null < "$kf" || :
+    (( ${#klines[@]} == 1 )) || { _probe_say "the key file is not exactly one line (lines: ${#klines[@]})"; printf 'failed'; exit 0; }
+    key="${klines[0]}"
+    IFS= read -r -N 46 kraw < "$kf" 2>/dev/null || :
+    [[ "$kraw" == "$key"$'\n' ]] || { _probe_say "the key file is not exactly one line plus a newline"; printf 'failed'; exit 0; }
+    # The key shape is judged by the same measure the library uses
+    # (_awg_hpk_file_valid): 44 base64 characters. "Not empty" is not enough - a
+    # genkey that exits zero and prints rubbish would pass it, control step 2
+    # would then refuse over the KEY FILE, and we would call a healthy module
+    # second line and send its owner to rebuild it for nothing.
+    [[ "$key" =~ ^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$ ]] || { _probe_say "the key is not of the shape the library requires"; printf 'failed'; exit 0; }
+
+    # A name shorter than 15 characters and never awg0: the probe has no
+    # business touching the working interface. The protection here is the SHAPE
+    # of the name (`awgp<pid>x<n>` cannot equal awg0), and a test pins it; there
+    # is deliberately no separate awg0 check, which would be an unreachable line
+    # reading like a live guard. A taken name means the next one, never a write
+    # into someone else's device.
+    for i in 1 2 3 4 5; do
+        ifn="awgp$$x$i"
+        # A hanging ip is "do not know", not "the name is free": going on and
+        # creating an interface under an unread name would be writing blind.
+        timeout -k 1 5 ip link show "$ifn" >/dev/null 2>&1
+        rc=$?
+        (( rc == 0 )) && continue
+        if (( rc == 124 || rc == 125 || rc == 137 )); then _probe_say "checking the name $ifn did not answer within the bound (code $rc)"; printf 'failed'; exit 0; fi
+        # 🔴 The record is laid down BEFORE anything is created, not after. A
+        # signal fits between a successful `ip link add` and the write, and then
+        # the interface is on the machine with nothing to find it by - exactly
+        # the silent loss this record exists to prevent. If the write fails,
+        # NOTHING is created: an honest refusal beats a trace nobody knows of.
+        # 🔴 set -C (O_EXCL) is required: the path is predictable, the installer
+        # runs as root, and a plain `>` would follow a symlink planted there and
+        # overwrite somebody else's file.
+        rm -f "$rec" 2>/dev/null
+        ( set -C; printf '%s\n' "$ifn" > "$rec" ) 2>/dev/null || { _probe_say "the interface name could not be written to $rec"; printf 'failed'; exit 0; }
+        timeout -k 1 5 ip link add "$ifn" type amneziawg >/dev/null 2>&1
+        rc=$?
+        if (( rc == 0 )); then made=1; break; fi
+        # 🔴 The PRESENCE OF THE DEVICE decides, not the exit code. The command
+        # may have been cut short after the kernel had already created the
+        # interface: a timeout, a signal from outside, a delayed netlink
+        # acknowledgement. The previous form caught only the three timeout codes
+        # and, on any other, dropped the record and took the next name - measured
+        # at five interfaces on the machine and not one record naming them. The
+        # name is built from OUR pid, so it cannot be anyone else's: a device
+        # found here is ours, and the record of it has to stay.
+        timeout -k 1 5 ip link show "$ifn" >/dev/null 2>&1
+        arc=$?
+        if (( arc != 1 )); then
+            _probe_say "creating the interface $ifn was not confirmed (code $rc), but the device is there or could not be checked (code $arc); the record is left for the cleanup"
+            printf 'failed'; exit 0
+        fi
+        # No device: the creation really did fail, and the same reason will
+        # repeat on the other names, so there is nothing to walk to.
+        rm -f "$rec" 2>/dev/null
+        _probe_say "the interface $ifn was not created (code $rc), and the reason will repeat on the other names"
+        printf 'failed'; exit 0
+    done
+    [[ "$made" -eq 1 ]] || { _probe_say "all five temporary names are taken"; printf 'failed'; exit 0; }
+
+    timeout -k 1 5 awg set "$ifn" s1 15 s2 15 s3 12 s4 12 \
+        header-protection-key "$kf" content-padding-addition 32-128 </dev/null >/dev/null 2>&1
+    rc=$?
+    if (( rc != 0 )); then
+        # A timeout is not a verdict about the module: no answer came back. 124
+        # is timeout firing, 125 is timeout itself failing, 137 is the KILL that
+        # -k sends. The control steps cannot help here: they say WHAT was
+        # rejected, and after a hang nothing was rejected at all, so their answer
+        # would describe another command rather than the one that never replied.
+        if (( rc == 124 || rc == 125 || rc == 137 )); then _probe_say "the main awg set did not answer within the bound (code $rc)"; printf 'failed'; exit 0; fi
+        # The control takes TWO steps, because the refused command carried two
+        # different third-line parameters at once.
+        # Step 1: the same padding sizes without the third-line parameters. A
+        # refusal here means they are not the reason, and the module cannot be
+        # judged.
+        timeout -k 1 5 awg set "$ifn" s1 15 s2 15 s3 12 s4 12 </dev/null >/dev/null 2>&1
+        ctl=$?
+        if (( ctl != 0 )); then _probe_say "control step 1 refused (code $ctl): the third-line parameters are not the reason"; printf 'failed'; exit 0; fi
+        # Step 2: the same plus the header protection key ALONE. A refusal here
+        # is a module that does not understand the third line. If the key was
+        # taken and the refusal was about the padding, the line cannot be named
+        # from that refusal: "update the module" would be wrong advice, so saying
+        # the check could not be made is the honest answer.
+        # 🔴 Step 2 judges by exit code 1, and `awg set` returns one on ANY
+        # error, a key file it cannot read included. If the file went away
+        # between the shape check and this step, the refusal would be about the
+        # FILE, and we would call a healthy module second line.
+        # 🔴 The SAME thing is checked here as at validation: a regular file,
+        # not a symlink, readable, and exactly 45 bytes. ⚠️ Only the SIZE half
+        # is held behaviourally, by the case where the file grows between the
+        # shape check and this step.
+        # 🔴 But the -f/! -L/-r triple is NOT redundant, and the previous wording
+        # of this comment lied by saying it had no case of its own. Its case is a
+        # file whose size CANNOT be measured: a FIFO can be planted at that path,
+        # and `wc -c` on one sits there rather than answering. ⚠️ The previous
+        # wording credited the `timeout` with stopping that, and it was WRONG: a
+        # bound does not cover the open when the redirection is performed by the
+        # calling shell (the measurement and the reasoning are at the first size
+        # check). What stops a FIFO here is the TRIPLE: `-f` on one is false and
+        # answers without opening. It also sees a symlink to a perfectly good
+        # file, which the size cannot see at all. ⚠️ The `! -L` half DOES have a test - the case that
+        # swaps the key file for a symlink. What is left without one is `-f` and
+        # `-r`: neither a FIFO at that path nor an unreadable file can be made on
+        # the development host. The old `-s` form asked
+        # only "not empty" and let through precisely the file it was put there
+        # to stop - one replaced between the validation and this step.
+        [[ -f "$kf" && ! -L "$kf" && -r "$kf" ]] || { _probe_say "the key file is not a regular readable file before control step 2"; printf 'failed'; exit 0; }
+        kbytes=$(timeout -k 1 5 sh -c 'wc -c < "$0"' "$kf" 2>/dev/null)
+        krc=$?
+        kbytes="${kbytes//[[:blank:]]/}"
+        [[ $krc -eq 0 && "$kbytes" == 45 ]] || { _probe_say "the key file is not exactly 45 bytes before control step 2 (code $krc, bytes: ${kbytes:-unknown})"; printf 'failed'; exit 0; }
+        timeout -k 1 5 awg set "$ifn" s1 15 s2 15 s3 12 s4 12 \
+            header-protection-key "$kf" </dev/null >/dev/null 2>&1
+        ctl=$?
+        # Only a REAL refusal from the tool (code 1) is a verdict about the
+        # module. A timeout, a missing binary or any other code cannot be: a hung
+        # command would otherwise declare a healthy module second line and send a
+        # person to rebuild it for nothing - the same thing the timeout check on
+        # the main command guards against.
+        if (( ctl == 1 )); then
+            # 🔴 A one from `awg set` means "any error", not "the module said
+            # no". An interface that went away, or became unreachable, returns
+            # the same one. What is checked is the device itself, not the text
+            # of the error: the wording of a tool changes between versions, the
+            # presence of a device does not.
+            timeout -k 1 5 ip link show "$ifn" >/dev/null 2>&1 || { _probe_say "the refusal on step 2 came from a vanished interface, not from the module"; printf 'failed'; exit 0; }
+            _probe_say "verdict: second line - the tool refused the key ALONE on step 2 and the interface is still there"
+            printf 'line2'
+        else
+            _probe_say "step 2 returned code $ctl, and only 1 counts as a verdict about the module"
+            printf 'failed'
+        fi
+        exit 0
+    fi
+
+    out=$(timeout -k 1 5 awg showconf "$ifn" </dev/null 2>/dev/null) || { _probe_say "awg showconf refused"; printf 'failed'; exit 0; }
+    # 🔴 The parsing uses no external command, and that is not a matter of
+    # style but of three reasons.
+    # 1. The key must not reach the argv of ANY command: argv is visible to
+    #    anyone through /proc/<pid>/cmdline. The previous version built a
+    #    pattern out of the key and handed it to grep, which made the promise
+    #    "it never appears in a command line" untrue, in the comment and in the
+    #    changelog alike.
+    # 2. A failure of grep or sed themselves (a missing binary, a pattern error)
+    #    landed in the second-line branch, so a person was told to rebuild a
+    #    healthy module because a utility was missing.
+    # 3. The escaping disappears: a random base64 key carries '+' or '/' about
+    #    three times in four, and that branch was never once tested with one.
+    #    A whole-line comparison has nothing to escape.
+    # Measured on a stand, 19 sep 2026: the key is read back VERBATIM (checked
+    # with two different random keys) and the range exactly as it was set.
+    while IFS= read -r line; do
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        case "$line" in
+            "[Interface]")                     seen=1 ;;
+            "HeaderProtectionKey = $key")      hpk=1; hpk_name=1 ;;
+            "ContentPaddingAddition = 32-128") cpa=1; cpa_name=1 ;;
+            "HeaderProtectionKey"*)            hpk_name=1 ;;
+            "ContentPaddingAddition"*)         cpa_name=1 ;;
+        esac
+    done <<< "$out"
+    # The answer has to be a config. `awg showconf` on an interface that exists
+    # always prints at least the [Interface] line (same measurement), so a zero
+    # exit with empty or unrecognisable output speaks about the environment and
+    # not about the generation: a substituted binary, a truncated pipe, a device
+    # that vanished.
+    (( seen == 1 )) || { _probe_say "the awg showconf answer does not look like a config"; printf 'failed'; exit 0; }
+    # 🔴 A verdict says what it rests on as well. Only the refusals used to
+    # speak, and the three verdicts were silent - so a wrong "second line",
+    # which costs its owner a module rebuild and a reboot, arrived WITH NO
+    # EVIDENCE, `--verbose` included. The most expensive answer has to be the
+    # most traceable one.
+    if (( hpk == 1 && cpa == 1 )); then
+        _probe_say "verdict: third line - both parameters came back with the values we set"
+        printf 'ok'
+    elif (( hpk_name == 0 && cpa_name == 0 )); then
+        # 🔴 A silent acceptance is when the answer carries NOT EVEN THE NAMES of
+        # the two parameters: an older module passes unknown netlink attributes
+        # over without a word. What is compared here is the presence of the NAME,
+        # not a matching value. Otherwise an answer where the module took
+        # everything and gave everything back, only in another shape - an extra
+        # space, a masked value, a differently written range - would land in
+        # "second line" and its owner would be told to rebuild a healthy module.
+        # The output shape rests on a single bench measurement, and a drift in it
+        # has to lead to "could not check", never to a confident verdict.
+        _probe_say "verdict: second line - the tool took everything in silence and the answer carries NEITHER NAME"
+        printf 'line2'
+    else
+        # 🔴 Everything else lands here: one of the two came back, or the names
+        # are there and the values are not ours. Neither is the second line.
+        # Upstream shipped the third-line parameters at different times, so an
+        # intermediate build knows the key but not the padding; and a value that
+        # does not match means we simply did not understand the answer. The
+        # second-line text would be false in both of its clauses, and its advice
+        # to rebuild the module would be a guess.
+        _probe_say "only part of the values came back (key: $hpk, padding: $cpa), the generation cannot be named"
+        printf 'failed'
+    fi
+    exit 0
+)
+
+# awg31_restore_blocker : pass when the third line will come up on this host;
+# otherwise a reason CODE. Success is an EXPLICIT word, not silence: the empty
+# answer of a killed subprocess must not read as a pass.
+# The codes and the order of checks are those of the post stage of the
+# installer's awg31_environment_blocker, but without not_implemented_yet:
+# restore brings back an existing 3.1 installation, it does not issue a new one.
+# Not knowing (architecture, probe) is a refusal, not a pass.
+awg31_restore_blocker() {
+    local arch kver
+    arch=$(_awg31_host_arch)
+    arch="${arch//[[:space:]]/}"
+    kver=$(uname -r)
+    [[ -n "$arch" ]] || { printf 'arch_unknown'; return 0; }
+    case "$arch" in
+        amd64|x86_64) : ;;
+        arm*|aarch64*) printf 'arm'; return 0 ;;
+        *) printf 'arch_unsupported'; return 0 ;;
+    esac
+    _kernel_supports_awg3 "$kver" || { printf 'kernel'; return 0; }
+    awg31_tools_support || { printf 'tools_old'; return 0; }
+    awg31_module_support
+    case $? in
+        0) : ;;
+        1) printf 'module_line2'; return 0 ;;
+        *) printf 'module_probe_failed'; return 0 ;;
+    esac
+    printf 'pass'
+    return 0
+}
+
+# _awg31_restore_blocker_reason <code> : the restore refusal reason as human text.
+_awg31_restore_blocker_reason() {
+    case "${1-}" in
+        arch_unknown)        printf '%s' "the machine architecture could not be determined, and not knowing it is not the same as knowing it fits" ;;
+        arm)                 printf '%s' "the third line is not issued on ARM yet: the architecture has not been measured for it" ;;
+        arch_unsupported)    printf '%s' "architecture '$(_awg31_host_arch)' has not been measured for the third line, the 3.1 profile needs x86_64" ;;
+        kernel)              printf '%s' "kernel $(uname -r) is older than 6.7, a second-line module is installed on it" ;;
+        tools_old)           printf '%s' "the awg tools are missing or do not understand the third-line parameters (the awg and timeout commands are needed); the fix: apt-get update && apt-get install amneziawg-tools, then apt-get install --only-upgrade amneziawg-tools" ;;
+        module_line2)        printf '%s' "the loaded kernel module does not understand the third-line parameters; the fix: apt-get update && apt-get install --only-upgrade amneziawg-dkms, then a reboot" ;;
+        module_probe_failed) printf '%s' "could not check whether the loaded module understands the third line (where the probe stopped is in the log with --verbose)" ;;
+        "")                  printf '%s' "the environment check gave no answer (the subprocess was cut short)" ;;
+        *)                   printf '%s' "unknown reason '${1-}'" ;;
+    esac
 }
 
 # Parser for the live AmneziaWG server config (source of truth for AWG_*).
@@ -1953,8 +2660,9 @@ _awg_hpk_file_refuse() {
 #     key; a differing file is refused and left alone;
 #   - a new key is created only in install mode and only while the server config does
 #     not exist yet (first install); never over an existing config.
-# Limits: the live interface is not checked (the key sticks to it), and manage
-# restore is not protected by this check.
+# Limits: the live interface is not checked (the key sticks to it). manage restore
+# applies this check to the unpacked backup rather than to the live paths
+# (_restore_check_candidate), manage backup to the live installation under any marker.
 awg_hpk_ensure() {
     _awg_xtrace_guard _awg_hpk_ensure_body "$@"
 }
@@ -3295,6 +4003,52 @@ awg_record_device_params() {
     _awg_save_device_params "$state" "$fp"
 }
 
+# _awg_hpk_device_state : the header protection key in SERVER_CONF_FILE against
+# the key on the live awg0. Prints same, differ, unreadable (awg0 cannot be read
+# and the file carries a key; without a key in the file it is same) or badfile
+# (the file itself cannot be parsed). Presence and value are compared; the value
+# is never printed - the body runs with tracing off.
+_awg_hpk_device_state() {
+    _awg_xtrace_guard _awg_hpk_device_state_body
+}
+
+_awg_hpk_device_state_body() {
+    local _hs_any=0 _hs_if=0 _hs_out=0 _hs_val="" dev="" line dev_key="" dev_has=0 file_has=0
+    if [[ -r "$SERVER_CONF_FILE" ]]; then
+        _awg_hpk_conf_scan "$SERVER_CONF_FILE" || { printf 'badfile'; return 0; }
+        (( _hs_if > 0 )) && file_has=1
+    fi
+    # awg0 that cannot be read is a reason to restart only when the file carries
+    # a key. On 2.0 without a key there is nothing to judge, and a passing showconf
+    # failure must not cut connections: the usual strip and syncconf path falls
+    # back to a restart on its own when it fails.
+    if ! dev=$(timeout 10 awg showconf awg0 </dev/null 2>/dev/null); then
+        if (( file_has )); then printf 'unreadable'; else printf 'same'; fi
+        return 0
+    fi
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^[[:space:]]*[Hh][Ee][Aa][Dd][Ee][Rr][Pp][Rr][Oo][Tt][Ee][Cc][Tt][Ii][Oo][Nn][Kk][Ee][Yy][[:space:]]*=[[:space:]]*(.*)$ ]]; then
+            dev_has=1
+            dev_key="${BASH_REMATCH[1]}"
+            dev_key="${dev_key%"${dev_key##*[![:space:]]}"}"
+            # An empty or all-zero value means "no key". Measured in 2026: without
+            # a key the 3.1 module does not print the line at all, but the
+            # neighbouring ContentPaddingAddition shows its name with a zero even
+            # before it is set, and a future tools build may do the same here.
+            if [[ -z "$dev_key" || "$dev_key" =~ ^A{43}=$ ]]; then
+                dev_has=0
+                dev_key=""
+            fi
+        fi
+    done <<< "$dev"
+    if (( file_has != dev_has )) || [[ "$file_has" == 1 && "$_hs_val" != "$dev_key" ]]; then
+        printf 'differ'
+    else
+        printf 'same'
+    fi
+    return 0
+}
+
 # ==============================================================================
 # Config application (syncconf)
 # ==============================================================================
@@ -3414,6 +4168,32 @@ apply_config() {
         log_warn "  not do it for you. If you have already restarted the service by hand, this"
         log_warn "  warning can be ignored: after a successful apply the snapshot is"
         log_warn "  refreshed and this line will not appear on later runs."
+    fi
+
+    # 🔴 The header protection key on the live interface must match the file:
+    # syncconf only adds device parameters, and profiles are issued from the
+    # file. The key is in the file and not on awg0 (or the other way round, or
+    # the values differ) - the interface is recreated with a restart, not a
+    # syncconf. awg0 cannot be read - a restart too: there is nothing to judge by.
+    local _dev_state
+    _dev_state=$(_awg_hpk_device_state)
+    if [[ "$_dev_state" != same ]]; then
+        if [[ "$_dev_state" == badfile ]]; then
+            log_warn "Could not parse $SERVER_CONF_FILE to compare the header protection key with the live interface awg0 - applying with a restart, not a syncconf."
+        elif [[ "$_dev_state" == differ ]]; then
+            log_warn "The header protection key (HeaderProtectionKey) on the live interface awg0 differs from $SERVER_CONF_FILE - the interface is recreated with a restart, not a syncconf."
+        else
+            log_warn "The state of the live interface awg0 cannot be read (awg showconf) - applying with a restart, not a syncconf."
+        fi
+        awg_warn_interface_disruption
+        systemctl restart awg-quick@awg0 2>/dev/null; rc=$?
+        if [[ $rc -ne 0 ]]; then
+            log_warn "Restart error."
+        else
+            awg_record_device_params
+        fi
+        exec {apply_fd}>&-
+        return $rc
     fi
 
     local strip_out
@@ -3646,6 +4426,23 @@ remove_peer_from_server() {
         log_error "Peer '$name' not found in config"
         exec {lock_fd}>&-
         return 1
+    fi
+    # Optional expected public key (the generate_client rollback): only the peer
+    # this operation created is removed. Checked under this same lock: another
+    # process may have recreated a client with the same name.
+    if [[ -n "${2:-}" ]]; then
+        local _pk
+        _pk=$(awk -v target="$name" '
+            /^\[Peer\]/ { p = 1; f = 0; next }
+            /^\[/ { p = 0; f = 0 }
+            p && $0 == "#_Name = " target { f = 1; next }
+            p && f && /^PublicKey[ \t]*=/ { sub(/^PublicKey[ \t]*=[ \t]*/, ""); sub(/[ \t\r]+$/, ""); print; exit }
+        ' "$SERVER_CONF_FILE" 2>/dev/null)
+        if [[ "$_pk" != "$2" ]]; then
+            log_error "Peer '$name' in the config is no longer the one this operation created - not removing it"
+            exec {lock_fd}>&-
+            return 1
+        fi
     fi
 
     # temp in the server config dir -> the final mv is an atomic rename.
@@ -4125,6 +4922,156 @@ _awg31_refuse_client_leftovers() {
     return 0
 }
 
+# _awg31_need_client_tools : on a 3.1 installation - the same tools step 6
+# checks (_awg31_require_client_tools), before any change. On 2.0 and with an
+# unreadable marker it requires nothing: an unreadable marker without a key
+# behaves as 2.0 (the awg_hpk_ensure rule), and with a key it never gets here -
+# load_awg_params stops it.
+_awg31_need_client_tools() {
+    local gen
+    gen=$(_awg_generation_from_init "$CONFIG_FILE") || return 0
+    [[ "$gen" == "3.1" ]] || return 0
+    _awg31_require_client_tools
+}
+
+# A copy of the client set for the time of a regen (slice C2). On a 3.1
+# installation the set is all or nothing: a regenerate_client whose set comes
+# out incomplete, or which breaks off after rewriting the .conf, puts the
+# previous set back exactly (a file that did not exist is removed again). The
+# copies are temporary files in AWG_DIR, next to the originals: modes are kept,
+# the client private key from the .conf does not leave the directory, and the
+# temp file registry removes them even on an abort (the previous set is NOT put
+# back on an abort: only the regen itself puts it back).
+# The state lives in a global array: call WITHOUT $( ), or it is lost.
+_AWG31_SET_SNAP=()
+
+# _awg31_set_snapshot <name> : take the copy (does nothing on 2.0).
+_awg31_set_snapshot() {
+    local name="$1" gen f tmp
+    _AWG31_SET_SNAP=()
+    gen=$(_awg_generation_from_init "$CONFIG_FILE") || return 0
+    [[ "$gen" == "3.1" ]] || return 0
+    for f in "$AWG_DIR/${name}.conf" "$AWG_DIR/${name}.png" "$AWG_DIR/${name}.vpnuri" "$AWG_DIR/${name}.vpnuri.png"; do
+        if [[ -e "$f" || -L "$f" ]]; then
+            if ! tmp=$(awg_mktemp "$AWG_DIR") || ! cp -a "$f" "$tmp"; then
+                log_error "Could not save a copy of $f before regenerating client '$name' - the regen did not start."
+                _awg31_set_drop
+                return 1
+            fi
+            _AWG31_SET_SNAP+=("$f"$'\t'"$tmp")
+        else
+            _AWG31_SET_SNAP+=("$f"$'\t')
+        fi
+    done
+    return 0
+}
+
+# _awg31_set_restore : put the set back from the copy. Returns 1 when any file
+# did not come back; each such file is named.
+_awg31_set_restore() {
+    local e f tmp rc=0
+    for e in "${_AWG31_SET_SNAP[@]}"; do
+        f="${e%%$'\t'*}"
+        tmp="${e#*$'\t'}"
+        if [[ -n "$tmp" ]]; then
+            if ! mv -f "$tmp" "$f"; then
+                # The copy is a temporary file and is removed on exit, so it is
+                # kept as a hard link under a lasting name.
+                if ln -f "$tmp" "${f}.before-regen" 2>/dev/null; then
+                    log_error "Could not return $f; the previous file is kept as ${f}.before-regen."
+                else
+                    log_error "Could not return $f, and the previous file could not be kept either."
+                fi
+                rc=1
+            fi
+        elif [[ -e "$f" || -L "$f" ]]; then
+            rm -f "$f" || { log_error "Could not remove $f, which did not exist before the regen."; rc=1; }
+        fi
+    done
+    _AWG31_SET_SNAP=()
+    return "$rc"
+}
+
+# _awg31_set_restore_noted <name> : put the set back on a regen failure path.
+# The message above the call speaks of a rewritten .conf; on 3.1 that is no
+# longer true after the restore, so this says the set came back. On 2.0 there is
+# no copy - it says nothing.
+_awg31_set_restore_noted() {
+    (( ${#_AWG31_SET_SNAP[@]} > 0 )) || return 0
+    if _awg31_set_restore; then
+        log_warn "3.1 installation: the previous set of client '$1' was put back, the regen is cancelled as a whole."
+    else
+        log_error "3.1 installation: the previous set of client '$1' did not come back whole (details above)."
+    fi
+    return 0
+}
+
+# _awg31_undo_client <name> <public key> : take off the client this operation
+# created, after an incomplete set. The config lock is released by then, and
+# another process may have recreated a client with the same name, so ONLY our
+# own is taken off: the files - when the public key in keys/ is ours (checked
+# and removed under the lock), the peer - through remove_peer_from_server with
+# the expected key (checked under its lock).
+_awg31_undo_client() {
+    local name="$1" pub="$2" lock_fd pk="" f
+    exec {lock_fd}>"${AWG_DIR}/.awg_config.lock"
+    if ! flock -x -w 30 "$lock_fd"; then
+        exec {lock_fd}>&-
+        log_error "The config lock was not acquired: client '$name' with an incomplete set was not taken off - remove it: manage remove $name"
+        return 1
+    fi
+    [[ -f "$KEYS_DIR/${name}.public" ]] && IFS= read -r pk < "$KEYS_DIR/${name}.public"
+    if [[ -z "$pub" || "$pk" != "$pub" ]]; then
+        exec {lock_fd}>&-
+        log_error "Client '$name' was changed by another operation meanwhile - the rollback leaves it alone. Check: manage list"
+        return 1
+    fi
+    _remove_client_files "$name"
+    local _left=""
+    for f in "$AWG_DIR/${name}.conf" "$AWG_DIR/${name}.png" "$AWG_DIR/${name}.vpnuri" \
+             "$AWG_DIR/${name}.vpnuri.png" "$KEYS_DIR/${name}.private" "$KEYS_DIR/${name}.public"; do
+        [[ -e "$f" || -L "$f" ]] && _left+=" $f"
+    done
+    exec {lock_fd}>&-
+    [[ -z "$_left" ]] || log_error "The files of client '$name' were not removed:${_left}"
+    if ! remove_peer_from_server "$name" "$pub"; then
+        log_error "Peer '$name' was not taken out of $SERVER_CONF_FILE (reason above) - remove it: manage remove $name"
+        return 1
+    fi
+    [[ -z "$_left" ]] || return 1
+    log "Client '$name' taken off: the peer and the files were removed."
+    return 0
+}
+
+# _awg31_set_drop : discard the copy after a successful regen.
+_awg31_set_drop() {
+    local e tmp
+    for e in "${_AWG31_SET_SNAP[@]}"; do
+        tmp="${e#*$'\t'}"
+        [[ -n "$tmp" ]] && rm -f "$tmp"
+    done
+    _AWG31_SET_SNAP=()
+    return 0
+}
+
+# _awg31_client_set_ok <name> [step failed 0|1] : on a 3.1 installation - the client set check
+# (awg_client_artifacts_check); on 2.0 and with an unreadable marker without a
+# key - 0.
+_awg31_client_set_ok() {
+    local gen
+    gen=$(_awg_generation_from_init "$CONFIG_FILE") || return 0
+    [[ "$gen" == "3.1" ]] || return 0
+    # A failed build step is an incomplete set even when the file is there: the
+    # generators write through a temporary file and leave the previous one alone,
+    # and the previous QR shows the previous config. A check of the files cannot
+    # see that.
+    if [[ "${2:-0}" == 1 ]]; then
+        log_error "Client set '$1': one of the build steps failed (the config QR, the vpn:// link or its QR); a previous file with the previous config may have stayed in place"
+        return 1
+    fi
+    awg_client_artifacts_check "$1"
+}
+
 # awg_client_artifacts_check <name> : the client's set of files, as a set.
 # A client is handed four files - the .conf, its QR code, the vpn:// link and
 # the link's QR code. Different steps produce them, and a failure in one used to
@@ -4290,6 +5237,9 @@ generate_client() {
 
     # Load parameters
     load_awg_params || return 1
+    # On 3.1 without the tools for the set (qrencode, perl) the client would come
+    # out incomplete: refuse before the keys and before the peer.
+    _awg31_need_client_tools || return 1
 
     # Optional PresharedKey: "auto" -> `awg genpsk`, otherwise use the
     # given value as-is. Empty/unset -> no PSK.
@@ -4404,16 +5354,28 @@ generate_client() {
     exec {lock_fd}>&-
 
     # QR code (optional, failure is non-fatal)
+    local _set_fail=0
     if ! generate_qr "$name"; then
+        _set_fail=1
         log_warn "QR code not created. Config: $AWG_DIR/${name}.conf"
     fi
 
     # vpn:// URI and QR for Amnezia VPN app (optional).
     # QR vpn:// is attempted only if URI was generated successfully — no source otherwise.
     if ! generate_vpn_uri "$name"; then
+        _set_fail=1
         log_warn "vpn:// URI not created for '$name'."
     elif ! generate_qr_vpnuri "$name"; then
+        _set_fail=1
         log_warn "vpn:// QR not created for '$name'."
+    fi
+
+    # On 3.1 the set is all or nothing: an incomplete set takes the client off
+    # whole - the peer from the server config and all its files.
+    if ! _awg31_client_set_ok "$name" "$_set_fail"; then
+        log_error "The set of client '$name' is incomplete (reason above): the client was not created."
+        _awg31_undo_client "$name" "$client_pubkey"
+        return 1
     fi
 
     log "Client '$name' created (IP: $client_ip)."
@@ -4470,6 +5432,9 @@ regenerate_client() {
     fi
 
     load_awg_params || { exec {lock_fd}>&-; return 1; }
+    # On 3.1 without the tools for the set a regen would leave the client with an
+    # incomplete set: refuse before any change.
+    _awg31_need_client_tools || { exec {lock_fd}>&-; return 1; }
 
     # Hygiene (Issue #253): CLIENT_ALLOWED_IPS is a contract for generating a
     # NEW client (manage add --allowed-ips); regen must never see it. Without
@@ -4645,9 +5610,13 @@ regenerate_client() {
 
     # Config regeneration (pass client_ipv6 if dual-stack). A live client's DNS goes
     # to render directly (8th argument): it is restored below anyway.
-    local _keep_dns=""
+    local _keep_dns="" _regen_sum=""
     [[ "$_had_conf" -eq 1 && -n "$current_dns" ]] && _keep_dns="$current_dns"
+    # On 3.1 the copy of the set is taken under the same lock the .conf is
+    # rewritten under, and it comes back on any failure below.
+    _awg31_set_snapshot "$name" || { exec {lock_fd}>&-; unset CLIENT_PSK; return 1; }
     render_client_config "$name" "$client_ip" "$client_privkey" "$server_pubkey" "$endpoint" "$_cport" "$client_ipv6" "$_keep_dns" || {
+        _awg31_set_restore_noted "$name"
         exec {lock_fd}>&-
         unset CLIENT_PSK
         return 1
@@ -4670,9 +5639,33 @@ regenerate_client() {
         # Our earlier ::/0 on a mode-2 list (v5.31.0-v5.36.1) cuts off the local
         # network on Windows; a plain regen has to deliver the replacement. For a
         # dual-stack client ::/0 is its own scheme and stays.
-        if [[ -z "$client_ipv6" ]]; then
+        # With CLIENT_IPV6_DIRECT=1 the device's IPv6 goes directly: our route is
+        # taken away, and the ::/0 to 2000::/3 swap with its warnings is not needed.
+        if [[ -z "$client_ipv6" && "${ALLOWED_IPS_MODE:-}" == "2" ]] && _client_ipv6_direct; then
+            _aip_new=$(_aip_drop_our_v6 "$current_allowed_ips" "${ALLOWED_IPS:-}") && [[ -n "$_aip_new" ]] || {
+                log_error "Could not compute AllowedIPs for client '$name'. The config has already been regenerated from the current routing mode, but individual settings were NOT restored - check $AWG_DIR/${name}.conf."
+                _awg31_set_restore_noted "$name"
+                exec {lock_fd}>&-
+                unset CLIENT_PSK
+                return 1
+            }
+            if [[ "$_aip_new" != "$current_allowed_ips" ]]; then
+                log "Client '$name': IPv6 route removed (CLIENT_IPV6_DIRECT=1) - the device's IPv6 goes directly, around the tunnel."
+                current_allowed_ips="$_aip_new"
+            elif [[ "${ALLOWED_IPS_MODE:-}" == "2" ]] \
+                 && { _aip_has_token "$current_allowed_ips" "2000::/3" || _aip_has_token "$current_allowed_ips" "::/0"; } \
+                 && [[ "$(grep -c ':' <<< "$(_aip_tokens "$current_allowed_ips")")" == "1" ]] \
+                 && ! _aip_has_token "$current_allowed_ips" "0.0.0.0/0" \
+                 && _is_full_tunnel "$current_allowed_ips"; then
+                # A route of our shape, but the IPv4 part is not the server list (the
+                # client was issued before an isolation or subnet change, or edited by
+                # hand): whose it is cannot be proven, so it stays - but not silently.
+                log_warn "Client '$name': IPv6 route kept - the client's IPv4 routes do not match the server list, so whose route it is cannot be told. If the client's routes were not set by hand, remove it: regen --reset-routes '$name'."
+            fi
+        elif [[ -z "$client_ipv6" ]]; then
             _aip_new=$(_aip_migrate_legacy_v6 "$current_allowed_ips" "${ALLOWED_IPS:-}") && [[ -n "$_aip_new" ]] || {
                 log_error "Could not compute AllowedIPs for client '$name'. The config has already been regenerated from the current routing mode, but individual settings were NOT restored - check $AWG_DIR/${name}.conf."
+                _awg31_set_restore_noted "$name"
                 exec {lock_fd}>&-
                 unset CLIENT_PSK
                 return 1
@@ -4705,6 +5698,7 @@ regenerate_client() {
             # is worse than the failure it replaced: the operator would have no
             # reason to look at the file.
             log_error "Could not compute AllowedIPs for client '$name'. The config has already been regenerated from the current routing mode, but individual settings were NOT restored - check $AWG_DIR/${name}.conf."
+            _awg31_set_restore_noted "$name"
             exec {lock_fd}>&-
             unset CLIENT_PSK
             return 1
@@ -4738,6 +5732,7 @@ regenerate_client() {
     if [[ -n "$current_dns" ]]; then
         if ! sed -i "s/^DNS = .*/DNS = ${_dns}/" "$_client_conf"; then
             log_error "sed error writing DNS to $_client_conf"
+            _awg31_set_restore_noted "$name"
             exec {lock_fd}>&-
             unset CLIENT_PSK
             return 1
@@ -4745,6 +5740,7 @@ regenerate_client() {
     fi
     if ! sed -i "s/^PersistentKeepalive = .*/PersistentKeepalive = ${_ka}/" "$_client_conf"; then
         log_error "sed error writing PersistentKeepalive to $_client_conf"
+        _awg31_set_restore_noted "$name"
         exec {lock_fd}>&-
         unset CLIENT_PSK
         return 1
@@ -4765,6 +5761,7 @@ regenerate_client() {
         log "Client '$name' had no config - AllowedIPs taken from the current routing mode."
     elif ! sed -i "s/^AllowedIPs = .*/AllowedIPs = ${_aip}/" "$_client_conf"; then
         log_error "sed error writing AllowedIPs to $_client_conf"
+        _awg31_set_restore_noted "$name"
         exec {lock_fd}>&-
         unset CLIENT_PSK
         return 1
@@ -4773,27 +5770,58 @@ regenerate_client() {
     # custom partial list on a server in mode 2).
     if ! _sync_v6_sink_address "$_client_conf"; then
         log_error "Could not bring the Address of client '$name' in line with its AllowedIPs: the routes in $_client_conf are already written, and the IPv6 sink address may not match them; QR and vpn:// were not rebuilt. Fix the cause and run regen '$name' again."
+        _awg31_set_restore_noted "$name"
         exec {lock_fd}>&-
         unset CLIENT_PSK
         return 1
     fi
 
+    # A fingerprint of our .conf: the final put-back must not overwrite a change
+    # another operation made after the lock was released.
+    _regen_sum=$(cksum < "$_client_conf" 2>/dev/null)
+
     # Release lock — config written, remaining ops are non-critical
     exec {lock_fd}>&-
 
     # QR code
-    generate_qr "$name"
+    local _set_fail=0
+    generate_qr "$name" || _set_fail=1
 
     # vpn:// URI and QR for Amnezia VPN app (best-effort).
     # QR vpn:// is attempted only if URI was regenerated successfully.
     if generate_vpn_uri "$name"; then
-        generate_qr_vpnuri "$name" || log_warn "vpn:// QR not updated for '$name'."
+        generate_qr_vpnuri "$name" || { log_warn "vpn:// QR not updated for '$name'."; _set_fail=1; }
     else
         log_warn "vpn:// URI not updated for '$name'."
+        _set_fail=1
     fi
 
     # Hygiene: do not let PSK leak into later operations in the same shell
     unset CLIENT_PSK
+
+    # On 3.1 the set is all or nothing: an incomplete set after the regen is
+    # replaced with the previous one, under the config lock.
+    if ! _awg31_client_set_ok "$name" "$_set_fail"; then
+        # Put back only under the lock and only if the .conf has not changed since
+        # our write: otherwise it would overwrite a concurrent change (modify, remove).
+        exec {lock_fd}>"$lockfile"
+        if ! flock -x -w 30 "$lock_fd"; then
+            log_error "The set of client '$name' is incomplete after the regen, and the config lock was not acquired: the previous set was not put back, so as not to overwrite a concurrent operation. Run again: manage regen $name"
+            _awg31_set_drop
+        elif [[ "$(cksum < "$AWG_DIR/${name}.conf" 2>/dev/null)" != "$_regen_sum" ]]; then
+            log_error "The set of client '$name' is incomplete after the regen, but another operation has already changed its config: the previous set was not put back. Check the client and run again: manage regen $name"
+            _awg31_set_drop
+        elif (( ${#_AWG31_SET_SNAP[@]} == 0 )); then
+            log_error "The set of client '$name' is incomplete after the regen, and there is no copy of the previous set (the generation marker could not be read when the copy was due): nothing was put back. Run again: manage regen $name"
+        elif _awg31_set_restore; then
+            log_error "The set of client '$name' is incomplete after the regen (reason above): the previous set of files was put back."
+        else
+            log_error "The set of client '$name' is incomplete after the regen, and the previous set did not come back whole (details above)."
+        fi
+        exec {lock_fd}>&-
+        return 1
+    fi
+    _awg31_set_drop
 
     log "Client config for '$name' regenerated."
     return 0
@@ -4926,9 +5954,14 @@ _validate_awg_config_body() {
         s3=$(sed -n 's/^[[:space:]]*S3[[:space:]]*=[[:space:]]*//p' "$SERVER_CONF_FILE" | tail -1 | sed 's/#.*//' | tr -d '[:space:]')
         s4=$(sed -n 's/^[[:space:]]*S4[[:space:]]*=[[:space:]]*//p' "$SERVER_CONF_FILE" | tail -1 | sed 's/#.*//' | tr -d '[:space:]')
     fi
+    # Jc = 0 is legal: both implementations simply send no junk packets at zero.
+    # The length is checked before any arithmetic: bash silently wraps a number
+    # longer than int64, and a huge Jc would compare as small or negative.
+    # With the leading zeros stripped, 010 is not read as octal.
     if [[ "$jc" =~ ^[0-9]+$ ]]; then
-        if [[ "$jc" -lt 1 || "$jc" -gt 128 ]]; then
-            log_error "Jc=$jc is out of range (1-128)"
+        jc=$(_awg_dec_strip "$jc")
+        if (( ${#jc} > 3 )) || [[ "$jc" -gt 128 ]]; then
+            log_error "Jc=$jc is out of range (0-128)"
             ok=0
         fi
     fi

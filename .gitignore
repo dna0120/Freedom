@@ -8,3 +8,5 @@ upstream/sync-step.log
 *.orig
 *.rej
 *.sync.bak
+__pycache__/
+*.pyc
