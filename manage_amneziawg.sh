@@ -6,16 +6,16 @@ if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
 fi
 
 # ==============================================================================
-# AmneziaWG 2.0 peer management script
+# AmneziaWG 3.x and 2.0 peer management script
 # Author: @dna0120
-# Version: 5.37.1
-# Date: 2026-10-13
+# Version: 6.0.0
+# Date: 2026-10-14
 # Repository: https://github.com/dna0120/Freedom
 # ==============================================================================
 
 # --- Safe mode and Constants ---
 # shellcheck disable=SC2034
-SCRIPT_VERSION="5.37.1"
+SCRIPT_VERSION="6.0.0"
 set -o pipefail
 # awg show colours its labels when WG_COLOR_MODE=always is in the environment,
 # even into a pipe. The secrets filter then does not recognise "header
@@ -1481,6 +1481,13 @@ modify_client() {
             # With CLIENT_IPV6_DIRECT=1 a mode-2 list without IPv6 is the chosen setup,
             # nothing to warn about; 0.0.0.0/0 needs ::/0 even with the key (iOS).
             # The init file is not loaded before modify, so the key is read here, in a subshell.
+            # The server address from the client's Endpoint: a list that already
+            # has a hole at it stays a full tunnel and the server list for the
+            # checks below.
+            local _AWG_CARVE_EPS=""
+            if [[ "$param" == "AllowedIPs" ]]; then
+                _AWG_CARVE_EPS=$(_aip_endpoint_v4 "$(sed -n 's/^Endpoint[ \t]*=[ \t]*//p' "$cf" | head -n 1 | tr -d '\r')")
+            fi
             local _v6d=""
             if [[ "$param" == "AllowedIPs" && "$value" != *:* ]] && ! _aip_has_token "$value" "0.0.0.0/0"; then
                 _v6d=$(safe_load_config "$CONFIG_FILE" >/dev/null 2>&1; _aip_direct_applies "$value" && printf yes)
@@ -1488,6 +1495,25 @@ modify_client() {
             if [[ "$param" == "AllowedIPs" && "$value" != *:* ]] \
                && _is_full_tunnel "$value" && [[ "$_v6d" != "yes" ]]; then
                 log_warn "AllowedIPs of client '$name' is a full tunnel without an IPv6 route - the device's IPv6 will go around the tunnel with its real address. To restore the route: regen '$name'."
+            fi
+            # The list is written as asked, but if it routes the server's own
+            # address into the tunnel, Linux awg-quick routes the packets to the
+            # server into it too. regen keeps the list and cuts a hole at the address.
+            if [[ "$param" == "AllowedIPs" && -n "$_AWG_CARVE_EPS" ]] \
+               && [[ "$(_aip_v4_norm "$value")" != "$(_AWG_CARVE_EPS="" _aip_v4_norm "$value")" ]]; then
+                log_warn "AllowedIPs of client '$name' routes the server's own address ($_AWG_CARVE_EPS) into the tunnel. The apps add a route to the server themselves, but Linux awg-quick routes the packets to the server into the tunnel too, and nothing gets through. To exclude the address from the list: regen '$name'."
+            fi
+            ;;
+        Endpoint)
+            # A new server address under the client's routes: the same loop with
+            # Linux awg-quick. regen would bring Endpoint back to the server's,
+            # so this only warns.
+            local _ep4 _cur_aip
+            _ep4=$(_aip_endpoint_v4 "$value")
+            _cur_aip=$(sed -n '/^\[Peer\]/,$ s/^AllowedIPs[ \t]*=[ \t]*//p' "$cf" | paste -sd, - | tr -d '\r')
+            if [[ -n "$_ep4" && -n "$_cur_aip" ]] \
+               && [[ "$(_AWG_CARVE_EPS="$_ep4" _aip_v4_norm "$_cur_aip")" != "$(_AWG_CARVE_EPS="" _aip_v4_norm "$_cur_aip")" ]]; then
+                log_warn "The new Endpoint of client '$name' ($_ep4) falls inside its AllowedIPs. The apps add a route to the server themselves, but Linux awg-quick routes the packets to the server into the tunnel. If the client runs Linux, give it AllowedIPs without this address (modify '$name' AllowedIPs)."
             fi
             ;;
     esac
@@ -1866,6 +1892,18 @@ check_server() {
         else
             log_warn " - Obfuscation parameters not detected"
         fi
+    fi
+    # A data packet of the same length as a handshake message (G2.14): a warning only,
+    # the check verdict does not change - the tunnel works, part of the small packets is lost.
+    awg_size_collision_warn
+    # The kernel module reachable by unprivileged processes through user namespaces
+    # (vendor bug amneziawg-linux-kernel-module#233): a warning only, the check
+    # verdict does not change - the server works. An older library of the same
+    # MAJOR.MINOR lacks the function: say the check was skipped, do not stay quiet.
+    if declare -F awg_userns_module_warn >/dev/null; then
+        awg_userns_module_warn
+    else
+        log_warn " - The check for kernel module access without root was skipped: awg_common.sh is older than manage. Update both halves to the same version."
     fi
 
     if [[ "${JSON_OUTPUT:-0}" -eq 1 ]]; then
@@ -2408,6 +2446,32 @@ diagnose_server() {
     else
         _diag_line FAIL "The AWG_PROTOCOL generation marker in $CONFIG_FILE cannot be read: the configuration generation is unknown"
         fail=$((fail+1))
+    fi
+
+    # 1c. A data packet of the same length as a handshake message (G2.14): part of
+    # the small packets is silently lost. A warning, not a failure: the tunnel works.
+    local _sc_msg _sc_fix
+    while IFS=$'\t' read -r _sc_msg _sc_fix; do
+        [[ -n "$_sc_msg" ]] || continue
+        _diag_line WARN "$_sc_msg"
+        echo "        Fix: $_sc_fix"
+        warn=$((warn+1))
+    done <<< "$(awg_size_collision_lines)"
+
+    # 1d. The kernel module reachable by unprivileged processes through user namespaces
+    # (amneziawg-linux-kernel-module#233). A warning, not a failure: the server works.
+    local _un_msg _un_fix
+    if declare -F awg_userns_module_lines >/dev/null; then
+        while IFS=$'\t' read -r _un_msg _un_fix; do
+            [[ -n "$_un_msg" ]] || continue
+            _diag_line WARN "$_un_msg"
+            echo "        Fix: $_un_fix"
+            warn=$((warn+1))
+        done <<< "$(awg_userns_module_lines)"
+    else
+        _diag_line WARN "The check for kernel module access without root was skipped: awg_common.sh is older than manage"
+        echo "        Fix: update both halves (manage and awg_common.sh) to the same version"
+        warn=$((warn+1))
     fi
 
     # 2. Service active

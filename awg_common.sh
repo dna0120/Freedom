@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ==============================================================================
-# Shared function library for AmneziaWG 2.0
+# Shared function library for AmneziaWG 3.x and 2.0
 # Author: @dna0120
-# Version: 5.37.1
-# Date: 2026-10-13
+# Version: 6.0.0
+# Date: 2026-10-14
 # Repository: https://github.com/dna0120/Freedom
 # ==============================================================================
 #
@@ -24,7 +24,7 @@ KEYS_DIR="${KEYS_DIR:-$AWG_DIR/keys}"
 # drifted apart (one file updated, the other not) - otherwise the mismatch shows
 # up as a "command not found" somewhere random. Bumped with the other versions.
 # shellcheck disable=SC2034  # used by the manage script after sourcing
-AWG_COMMON_VERSION="5.37.1"
+AWG_COMMON_VERSION="6.0.0"
 
 # --- Auto-cleanup of temporary files ---
 # NOTE: trap is NOT set here to avoid overwriting the caller's trap handler.
@@ -325,6 +325,14 @@ _is_full_tunnel() {
     done
     # An empty list (or an IPv6-only one) is not a full tunnel.
     [[ -n "$pairs" ]] || return 1
+    # The hole at the server address (_AWG_CARVE_EPS) does not break fullness:
+    # that address is cut by us, any other hole still makes the list a split.
+    local _ep _epi
+    for _ep in ${_AWG_CARVE_EPS:-}; do
+        _valid_ipv4 "$_ep" || continue
+        _epi=$(_ipv4_to_int "$_ep") || continue
+        pairs+="${_epi} ${_epi}"$'\n'
+    done
     # Sweep the union of the intervals: whatever stays uncovered must lie
     # entirely inside the non-public ranges. sort -n gives ascending order;
     # overlaps and duplicates collapse into the cursor.
@@ -420,6 +428,118 @@ _aip_has_token() {
     toks=$(_aip_tokens "$1") || return 1
     grep -qxF -- "$2" <<< "$toks"
 }
+# --- The server address out of AllowedIPs (routing modes 2 and 3) ---
+#
+# Linux awg-quick sets up the fwmark and the routing rule only for 0.0.0.0/0.
+# When the AllowedIPs list covers the server's own public address, encrypted
+# packets to the Endpoint go into the tunnel itself: the handshake goes through
+# (the first packet leaves before the routes), then rx freezes, tx grows and ping
+# gives ENOBUFS. The apps (Windows, Android, iOS) add a route to the Endpoint
+# themselves, Linux does not. So the issued list carries a hole at the server
+# address.
+#
+# _AWG_CARVE_EPS - server addresses separated by spaces, a local variable of the
+# caller (render, regen, modify). Bash shows it to nested calls, and through it
+# _is_full_tunnel and the comparisons with the server list account for the
+# hole. Empty - everything as before.
+
+# _aip_endpoint_v4 <Endpoint> : the IPv4 address of an Endpoint (with or without
+# a port), otherwise nothing. A name and IPv6 give nothing: a name may change its
+# address and a static hole would silently go stale; a /128 hole in 2000::/3 is
+# 125 routes.
+_aip_endpoint_v4() {
+    local e="${1:-}"
+    e="${e//[[:space:]]/}"
+    [[ -z "$e" || "$e" == \[* ]] && return 0
+    [[ "$e" == *:*:* ]] && return 0
+    e="${e%:*}"
+    _valid_ipv4 "$e" && printf '%s' "$e"
+    return 0
+}
+
+# _aip_warn_endpoint_not_v4 <client> <Endpoint> : no hole at the server address
+# is possible, and the list has IPv4 routes but no 0.0.0.0/0 - a Linux client
+# needs a manual route. The caller checks the list the client ends up with.
+_aip_warn_endpoint_not_v4() {
+    log_warn "Client '$1': Endpoint '$2' is not an IPv4 address, so the server address is not excluded from AllowedIPs. A Linux client (awg-quick) needs a manual route to the server, see ADVANCED, the section on a split route list."
+}
+
+# _aip_carve_endpoints <list> <address>... : the list without the server
+# addresses. Every IPv4 route that holds an address is replaced by its complement
+# around it: a /n route gives 32-n routes from the largest to the smallest, a /32
+# of the address itself disappears. 0.0.0.0/0 is left alone (mode 1, awg-quick
+# handles it itself), IPv6 and the other routes stay where they were. The result
+# does not depend on the order of the addresses and does not change on a repeated
+# call. An empty result is an empty string, the caller decides.
+_aip_carve_endpoints() {
+    local list="$1"; shift
+    local ep e tok t a p o1 o2 o3 o4 ip mask lo hi k net out
+    local -a toks=()
+    # The route bounds are computed with arithmetic in this same shell: a command
+    # substitution per route would make a list of thousands of networks take
+    # minutes (the same reason as the cap in _is_full_tunnel).
+    for ep in "$@"; do
+        _valid_ipv4 "$ep" || continue
+        IFS=. read -r o1 o2 o3 o4 <<< "$ep"
+        e=$(( (10#$o1 << 24) | (10#$o2 << 16) | (10#$o3 << 8) | 10#$o4 ))
+        mapfile -t toks < <(_aip_tokens "$list")
+        out=""
+        for tok in "${toks[@]}"; do
+            if [[ "$tok" == *:* || "$tok" == "0.0.0.0/0" ]]; then
+                out+="${out:+, }${tok}"
+                continue
+            fi
+            t="$tok"
+            [[ "$t" == */* ]] || t="${t}/32"
+            a="${t%/*}"; p="${t##*/}"
+            if [[ ! "$p" =~ ^[0-9]{1,2}$ ]] || (( 10#$p > 32 )) || ! _valid_ipv4 "$a"; then
+                log_warn "AllowedIPs: route '$tok' not parsed - the server address is not excluded from the list."
+                return 1
+            fi
+            p=$(( 10#$p ))
+            IFS=. read -r o1 o2 o3 o4 <<< "$a"
+            ip=$(( (10#$o1 << 24) | (10#$o2 << 16) | (10#$o3 << 8) | 10#$o4 ))
+            if (( p == 0 )); then mask=0; else mask=$(( (0xFFFFFFFF << (32 - p)) & 0xFFFFFFFF )); fi
+            lo=$(( ip & mask )); hi=$(( lo | (0xFFFFFFFF ^ mask) ))
+            if (( e < lo || e > hi )); then
+                out+="${out:+, }${tok}"
+                continue
+            fi
+            for (( k = p + 1; k <= 32; k++ )); do
+                net=$(( ((e >> (32 - k)) ^ 1) << (32 - k) ))
+                out+="${out:+, }$(( (net >> 24) & 255 )).$(( (net >> 16) & 255 )).$(( (net >> 8) & 255 )).$(( net & 255 ))/${k}"
+            done
+        done
+        list="$out"
+    done
+    printf '%s' "$list"
+}
+
+# _aip_v4_norm <list> : the IPv4 routes of the list after cutting the addresses
+# of _AWG_CARVE_EPS, sorted, one per line. For comparing a client list with the
+# server list: the hole at the server address is the same on both sides.
+_aip_v4_norm() {
+    local l="$1" t
+    if [[ -n "${_AWG_CARVE_EPS:-}" ]]; then
+        # shellcheck disable=SC2086  # addresses separated by spaces, split on purpose
+        l=$(_aip_carve_endpoints "$l" ${_AWG_CARVE_EPS}) || return 1
+    fi
+    t=$(_aip_tokens "$l") || return 1
+    local v4 rc
+    v4=$(grep -vF ':' <<< "$t"); rc=$?
+    (( rc > 1 )) && return 1
+    [[ -n "$v4" ]] || return 0
+    LC_ALL=C sort -u <<< "$v4"
+}
+
+# _aip_has_v4 <list> : whether the list keeps at least one IPv4 route.
+_aip_has_v4() {
+    local t
+    t=$(_aip_tokens "$1") || return 1
+    [[ -n "$t" ]] || return 1
+    grep -qvF ':' <<< "$t"
+}
+
 
 # _aip_wants_v6_sink <list> : whether the client needs the sink address - the
 # list has 2000::/3 and no ::/0 (with ::/0 the Windows kill switch is on anyway).
@@ -498,11 +618,21 @@ _client_ipv6_direct() {
 # _aip_same_set <list> <list> : the same set of routes (order and spaces do
 # not matter). An empty list matches nothing.
 _aip_same_set() {
-    local a b
-    a=$(_aip_tokens "$1" | LC_ALL=C sort -u) || return 1
-    b=$(_aip_tokens "$2" | LC_ALL=C sort -u) || return 1
+    local a b la="$1" lb="$2"
+    # With a known server address both lists are compared with the hole at it:
+    # a client list that already has the hole and the server list without it are
+    # one set.
+    if [[ -n "${_AWG_CARVE_EPS:-}" ]]; then
+        # shellcheck disable=SC2086  # addresses separated by spaces, split on purpose
+        la=$(_aip_carve_endpoints "$la" ${_AWG_CARVE_EPS}) || return 1
+        # shellcheck disable=SC2086
+        lb=$(_aip_carve_endpoints "$lb" ${_AWG_CARVE_EPS}) || return 1
+    fi
+    a=$(_aip_tokens "$la" | LC_ALL=C sort -u) || return 1
+    b=$(_aip_tokens "$lb" | LC_ALL=C sort -u) || return 1
     [[ -n "$a" && "$a" == "$b" ]]
 }
+
 
 # _aip_direct_applies <list> : CLIENT_IPV6_DIRECT covers this list - the server
 # is in mode 2, the list equals its list, and the key is on. Mode 3 and a full
@@ -535,8 +665,9 @@ _aip_drop_our_v6() {
     mine=$(grep -vF ':' <<< "$toks"); rc=$?
     (( rc > 1 )) && return 1
     [[ -n "$mine" ]] || { printf '%s' "$list"; return 0; }
-    srv=$(_aip_tokens "$base" | LC_ALL=C sort -u) || return 1
-    [[ "$(LC_ALL=C sort -u <<< "$mine")" == "$srv" ]] || { printf '%s' "$list"; return 0; }
+    # The sets are compared with the hole at the server address on both sides (_aip_v4_norm).
+    srv=$(_aip_v4_norm "$base") || return 1
+    [[ "$(_aip_v4_norm "$mine")" == "$srv" ]] || { printf '%s' "$list"; return 0; }
     while IFS= read -r tok; do
         out+="${out:+, }${tok}"
     done <<< "$mine"
@@ -568,8 +699,9 @@ _aip_migrate_legacy_v6() {
     mine=$(grep -vF ':' <<< "$toks"); rc=$?
     (( rc > 1 )) && return 1
     [[ -n "$mine" ]] || { printf '%s' "$list"; return 0; }
-    mine=$(LC_ALL=C sort -u <<< "$mine") || return 1
-    srv=$(_aip_tokens "$base" | LC_ALL=C sort -u) || return 1
+    # The sets are compared with the hole at the server address on both sides (_aip_v4_norm).
+    mine=$(_aip_v4_norm "$mine") || return 1
+    srv=$(_aip_v4_norm "$base") || return 1
     if [[ "$mine" == "$srv" ]]; then
         while IFS= read -r tok; do
             [[ "$tok" == "::/0" ]] && tok="2000::/3"
@@ -1672,9 +1804,11 @@ awg31_module_support() {
     esac
 }
 
+# A copy of the installer function (kept byte-identical by a test). Modes: line31 (default) and candidate20 - described at the installer copy.
 _awg31_module_probe() (
     case $- in *x*) set +x ;; esac
     umask 077
+    local mode="${1:-line31}"
     # 🔴 The probe can refuse for a good many different reasons, and until this
     # was added a person learned none of them. There is deliberately NO number
     # here: it has already drifted from the code twice, and the second time it
@@ -1697,6 +1831,7 @@ _awg31_module_probe() (
             printf 'module probe: %s\n' "$1" >&2
         fi
     }
+    case "$mode" in line31|candidate20) : ;; *) _probe_say "unknown probe mode '$mode'"; printf 'failed'; exit 0 ;; esac
     local ifn="" kf="" rec="" key="" out="" line="" ctl="" rc=0 arc=0 i=0 made=0 cleaned=0
     local klines=() kraw="" kbytes="" krc=0
     local seen=0 hpk=0 cpa=0 hpk_name=0 cpa_name=0
@@ -1712,6 +1847,16 @@ _awg31_module_probe() (
     # installer gets a SIGKILL, the record and the interface stay until a reboot:
     # the next run only looks for records of its own $$.
     rec="${TMPDIR:-/tmp}/awg31probe.$$.iface"
+    # 🔴 A record of an earlier probe of THIS process means its interface was
+    # not removed (the delete failed), and the installer cleanup finds it by
+    # that record. With the fallback the probe runs twice per process (line31,
+    # then candidate20), and the second would overwrite the first record: the
+    # interface would be left with no trace.
+    # A regular file only: anything else on this path (a directory, a link) is caught by the write refusal below.
+    if [[ -f "$rec" && ! -L "$rec" ]]; then
+        rm -f "$kf" 2>/dev/null
+        _probe_say "a record of an earlier probe of this run is left ($rec): its interface was not removed, not starting a new probe"; printf 'stale'; exit 0
+    fi
     # The cleanup has to survive both an ordinary exit and a signal: the machine
     # must not keep an interface of ours after the probe.
     _probe_cleanup() {
@@ -1741,6 +1886,7 @@ _awg31_module_probe() (
     trap '_probe_cleanup' EXIT
     trap '_probe_cleanup; printf "failed"; exit 0' INT TERM HUP
 
+    if [[ "$mode" == line31 ]]; then
     timeout -k 1 5 awg genkey </dev/null > "$kf" 2>/dev/null || { _probe_say "awg genkey did not produce a key"; printf 'failed'; exit 0; }
     # 🔴 But BOTH lines have to be read. `read` takes only the first, while the
     # module is handed the WHOLE file: a file with a correct first line and junk
@@ -1820,6 +1966,7 @@ _awg31_module_probe() (
     # would then refuse over the KEY FILE, and we would call a healthy module
     # second line and send its owner to rebuild it for nothing.
     [[ "$key" =~ ^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$ ]] || { _probe_say "the key is not of the shape the library requires"; printf 'failed'; exit 0; }
+    fi
 
     # A name shorter than 15 characters and never awg0: the probe has no
     # business touching the working interface. The protection here is the SHAPE
@@ -1869,6 +2016,46 @@ _awg31_module_probe() (
         printf 'failed'; exit 0
     done
     [[ "$made" -eq 1 ]] || { _probe_say "all five temporary names are taken"; printf 'failed'; exit 0; }
+
+    if [[ "$mode" == candidate20 ]]; then
+        # The candidate set as a whole, exactly as it goes into awg0.conf. An
+        # empty I1 (--no-cps) is not sent: that is how the config renders it.
+        local -a cargs=(jc "${AWG_Jc-}" jmin "${AWG_Jmin-}" jmax "${AWG_Jmax-}"
+                        s1 "${AWG_S1-}" s2 "${AWG_S2-}" s3 "${AWG_S3-}" s4 "${AWG_S4-}"
+                        h1 "${AWG_H1-}" h2 "${AWG_H2-}" h3 "${AWG_H3-}" h4 "${AWG_H4-}")
+        local -a want=("Jc = ${AWG_Jc-}" "Jmin = ${AWG_Jmin-}" "Jmax = ${AWG_Jmax-}"
+                       "S1 = ${AWG_S1-}" "S2 = ${AWG_S2-}" "S3 = ${AWG_S3-}" "S4 = ${AWG_S4-}"
+                       "H1 = ${AWG_H1-}" "H2 = ${AWG_H2-}" "H3 = ${AWG_H3-}" "H4 = ${AWG_H4-}")
+        if [[ -n "${AWG_I1-}" ]]; then cargs+=(i1 "$AWG_I1"); want+=("I1 = $AWG_I1"); fi
+        timeout -k 1 5 awg set "$ifn" "${cargs[@]}" </dev/null >/dev/null 2>&1
+        rc=$?
+        (( rc == 0 )) || { _probe_say "the 2.0 set was not applied (awg set, code $rc)"; printf 'failed'; exit 0; }
+        out=$(timeout -k 1 5 awg showconf "$ifn" </dev/null 2>/dev/null) || { _probe_say "awg showconf refused on the 2.0 set"; printf 'failed'; exit 0; }
+        local -A got=()
+        while IFS= read -r line; do
+            line="${line#"${line%%[![:space:]]*}"}"
+            line="${line%"${line##*[![:space:]]}"}"
+            [[ -n "$line" ]] && got["$line"]=1
+        done <<< "$out"
+        local w miss=""
+        for w in "${want[@]}"; do [[ -n "${got[$w]-}" ]] || miss+=" ${w%% =*}"; done
+        # The comparison is EXACT: measured 4 oct 2026 (tools v3.1.20260812),
+        # H ranges and I1 read back verbatim. A mismatch is "unknown", not "works".
+        if [[ -n "$miss" ]]; then
+            # What came back instead - every J, S, H and I line (they carry no secret): the comparison
+            # is exact, and another module build may answer in another form.
+            _probe_say "  lines in the answer: ${#got[@]}"
+            for line in "${!got[@]}"; do
+                [[ "${line,,}" =~ ^(jc|jmin|jmax|s[1-4]|h[1-4]|i[1-5])[[:space:]]*= ]] && _probe_say "  came back: $line"
+            done
+            _probe_say "the 2.0 set came back with different values:${miss}"
+            printf 'failed'
+        else
+            _probe_say "the 2.0 set applied and read back without differences"
+            printf 'ok'
+        fi
+        exit 0
+    fi
 
     timeout -k 1 5 awg set "$ifn" s1 15 s2 15 s3 12 s4 12 \
         header-protection-key "$kf" content-padding-addition 32-128 </dev/null >/dev/null 2>&1
@@ -2473,6 +2660,220 @@ _mask_report_secrets() {
         -e 's/(Key is not the correct length or format:[[:space:]]*).*/\1[HIDDEN]/I' \
         -e "s|(Unable to parse IP address:[[:space:]]*\`)[^.:']*'|\1[HIDDEN]'|I" \
         -e "s|\`[A-Za-z0-9+/]{20,}={0,2}'|\`[HIDDEN]'|g"
+}
+
+# _awg_size_collisions <S1> <S2> <S3> <S4> : whether the receiver can take a DATA
+# packet for a handshake message. Prints a "class P" line per such case (init,
+# response, cookie; P is the payload padded to 16), nothing when there is none. The
+# mechanism (which length matches lose packets and which do not) is described at
+# the same function in the installer; the body is the same in the installers and
+# here, RU and EN - a test compares them.
+_awg_size_collisions() {
+    local p
+    p=$(( $1 - $4 + 116 )); (( p >= 32 && p % 16 == 0 && p != 128 )) && echo "init $p"
+    p=$(( $2 - $4 + 60 )); (( p >= 32 && p % 16 == 0 )) && echo "response $p"
+    p=$(( $3 - $4 + 32 )); (( p >= 48 && p % 16 == 0 )) && echo "cookie $p"
+    return 0
+}
+
+# awg_size_collision_lines [config] : for check and diagnose - one
+# "message<TAB>how to fix" line per case when, in the server config, the receiver
+# can take data packets of one size class for a handshake message and that
+# message's H range is wide enough for the loss to matter (from 0.1% per side). A
+# single H value (the 3.1 profile: 1/2/3/4) gives about 2^-32 and is not named. No
+# config, a failed parse, S or H not numbers - it stays quiet: the installer
+# writes every Jc-H4 line, so a config that does not parse (a key in another
+# case, a missing line) is a hand edit, and a false alarm here would teach people
+# to ignore the real one. Only new S values fix it, that is, regenerated parameters
+# and reissued profiles; --preset also brings I1 back, so for a server installed
+# with --no-cps the advice carries that flag. Leading zeros are stripped before
+# the arithmetic: in $(( )) 094 reads as an octal number. With
+# ContentPaddingAddition (the 3.1 profile) a data packet is not 32 + P + S4 bytes
+# long, the model does not apply, and the function stays quiet. The helper leaves
+# out the init match at P = 128 (the zero half of the counter sits there, and a
+# generated H1 never holds 0); for a config whose H1 starts at 0 it is named on
+# its own: there every such packet is lost. AWG_CPA is unset before the load: the
+# loader sets it only for a line in the config, and check has already read the
+# init, where a 3.1 install has it. Spaces inside values (H1 = 100 - 200) are
+# dropped, as awg does.
+awg_size_collision_lines() {
+    local conf="${1:-$SERVER_CONF_FILE}" vals s1 s2 s3 s4 h1 h2 h3 cpa cls p h lo hi share preset nocps name note fix
+    vals=$(unset AWG_CPA; load_awg_params_from_server_conf "$conf" >/dev/null 2>&1 \
+        && printf '%s %s %s %s %s %s %s %s' "${AWG_S1//[[:space:]]/}" "${AWG_S2//[[:space:]]/}" "${AWG_S3//[[:space:]]/}" "${AWG_S4//[[:space:]]/}" \
+            "${AWG_H1//[[:space:]]/}" "${AWG_H2//[[:space:]]/}" "${AWG_H3//[[:space:]]/}" "${AWG_CPA:+${AWG_CPA//[[:space:]]/}}") || return 0
+    read -r s1 s2 s3 s4 h1 h2 h3 cpa <<< "$vals"
+    [[ -z "$cpa" || "$cpa" =~ ^0+(-0+)?$ ]] || return 0
+    [[ "$s1" =~ ^0*[0-9]{1,5}$ && "$s2" =~ ^0*[0-9]{1,5}$ && "$s3" =~ ^0*[0-9]{1,5}$ && "$s4" =~ ^0*[0-9]{1,5}$ ]] || return 0
+    s1=$((10#$s1)) s2=$((10#$s2)) s3=$((10#$s3)) s4=$((10#$s4))
+    read -r preset nocps <<< "$(AWG_PRESET="" NO_CPS=""; [[ -f "${CONFIG_FILE:-}" ]] && safe_load_config "$CONFIG_FILE" >/dev/null 2>&1; printf '%s %s' "${AWG_PRESET:--}" "${NO_CPS:-0}")"
+    [[ "$preset" == default || "$preset" == mobile ]] || preset=default
+    if [[ "$nocps" == 1 ]]; then nocps=" --no-cps"; else nocps=""; fi
+    fix="New S1-S4 values are needed: sudo bash install_amneziawg_en.sh --force --preset=${preset}${nocps} (regenerates all obfuscation parameters, Jc/Jmin/Jmax set by hand included; reboots, run it again after the reboot), then sudo bash ${MANAGE_SCRIPT_PATH:-$0} regen and a new import of the profiles on every device."
+    while read -r cls p; do
+        [[ -n "$cls" ]] || continue
+        case "$cls" in
+            init) h="$h1"; name="the handshake initiation" ;;
+            response) h="$h2"; name="the handshake response" ;;
+            cookie) h="$h3"; name="the cookie reply" ;;
+            *) continue ;;
+        esac
+        if [[ "$h" =~ ^0*([0-9]{1,10})-0*([0-9]{1,10})$ ]]; then
+            lo=${BASH_REMATCH[1]}; hi=${BASH_REMATCH[2]}
+        elif [[ "$h" =~ ^0*([0-9]{1,10})$ ]]; then
+            lo=${BASH_REMATCH[1]}; hi=$lo
+        else
+            continue
+        fi
+        (( hi >= lo )) || continue
+        share=$(LC_ALL=C awk -v w=$(( hi - lo + 1 )) 'BEGIN { s = w * 100 / 4294967296; if (s >= 0.1) printf "%.2f", s }')
+        [[ -n "$share" ]] || continue
+        note=""
+        [[ "$cls" == response && "$p" == 64 ]] \
+            && note=" At the checked place these packets carry the receiver index, which is fixed for a session: some sessions lose every such packet, the rest none."
+        printf '%s\t%s\n' \
+            "Data packets with an inner size of $(( p - 15 ))-${p} bytes have the length of ${name} (S1-S4 = ${s1}/${s2}/${s3}/${s4}): each side silently drops on average about ${share}% of them.${note}" \
+            "$fix"
+    done <<< "$(_awg_size_collisions "$s1" "$s2" "$s3" "$s4")"
+    if (( s1 - s4 == 12 )) && [[ "$h1" =~ ^0*([0-9]{1,10})(-|$) ]] && (( 10#${BASH_REMATCH[1]} == 0 )); then
+        printf '%s\t%s\n' \
+            "Data packets with an inner size of 113-128 bytes have the length of the handshake initiation, and H1 starts at 0 (S1-S4 = ${s1}/${s2}/${s3}/${s4}): at the checked place they carry the zero half of the counter, and each side drops every one of them." \
+            "$fix"
+    fi
+    return 0
+}
+
+# awg_size_collision_warn [config] : the same for check - as warnings in the log.
+awg_size_collision_warn() {
+    local msg fix
+    while IFS=$'\t' read -r msg fix; do
+        [[ -n "$msg" ]] || continue
+        log_warn " - $msg"
+        log_warn "   $fix"
+    done <<< "$(awg_size_collision_lines "$@")"
+    return 0
+}
+
+# _awg_sysctl_num <file> : the number in a /proc or /sys file (first line, all
+# whitespace removed, leading zeros read as decimal), empty when the file is
+# missing, unreadable, holds no number or a number longer than 10 digits. "Could
+# not read" and "read a non-number" are merged on purpose: in both cases the
+# caller does not know the value and must not make one up.
+_awg_sysctl_num() {
+    local v=""
+    [[ -r "$1" ]] || return 0
+    IFS= read -r v 2>/dev/null < "$1" || true
+    v="${v//[[:space:]]/}"
+    [[ "$v" =~ ^[0-9]{1,10}$ ]] && printf '%s' "$((10#$v))"
+    return 0
+}
+
+# awg_userns_module_lines : for check and diagnose - a "message<TAB>how to close
+# it" line when the amneziawg kernel module is on the system and unprivileged
+# user namespaces are allowed without restriction.
+#
+# Why. The module's netlink commands carry GENL_UNS_ADMIN_PERM and the family is
+# netnsok, so CAP_NET_ADMIN inside a process's OWN user namespace is enough to
+# create an amneziawg interface in its own network namespace and set I1-I5 on
+# it. The module's I1-I5 parser reads the length in <r>/<rc>/<rd> as a signed int
+# and never rejects a negative one (amneziawg-linux-kernel-module#233,
+# src/junk.c; the same code is in the pinned 2.0 source the ARM prebuilts are
+# built from), which in some tag combinations writes past a kernel buffer. Our
+# commands refuse such values (awg_cps_check_safe); the warning is about the
+# other users and programs on the host. The module declares
+# MODULE_ALIAS_RTNL_LINK and MODULE_ALIAS_GENL_FAMILY, so once installed but not
+# loaded it may load by itself on the first request. The sources of both lines
+# and the Debian kernel patch are kept in
+# RESEARCH/upstream-snapshots/2026-10-12/server/ (the workspace, not this
+# repository). Checked on an Ubuntu 24.04 stand on 12 oct 2026 without touching
+# the bug: with kernel.apparmor_restrict_unprivileged_userns = 0 an ordinary user
+# created the interface and set I1 = <r 8>; with kernel.unprivileged_userns_clone
+# = 0 unshare failed with EPERM; the stock AppArmor restriction (= 1) refused a
+# plain attempt but did NOT stop an ordinary user on the stand.
+#
+# Quiet when the module is not on the system (not loaded, and no non-empty
+# module file for the running kernel, or module loading is disabled:
+# kernel.modules_disabled = 1; a blacklist in modprobe.d is not taken into
+# account); when the path is closed (unprivileged_userns_clone,
+# max_user_namespaces or max_net_namespaces is 0); when max_user_namespaces or
+# max_net_namespaces is missing (we do not know whether the namespaces exist at
+# all); when the AppArmor restriction is in force (= 1, AppArmor not known to be
+# off and not in complain mode, where the restriction only logs); and when a
+# value the verdict needs exists but was not read: a guess here would teach
+# people not to trust the warning.
+# 🔴 The AppArmor restriction does NOT close the path (stand above). Staying
+# quiet under it is the owner's decision of 12 oct 2026 (the warning would
+# otherwise sit on every stock Ubuntu); ADVANCED says so plainly. So the advice
+# never suggests turning the AppArmor restriction on: check would then go quiet
+# with the path still open. The advice: unprivileged_userns_clone = 0 (a Debian
+# patch; Ubuntu carries it, checked on 24.04), without it max_user_namespaces = 0,
+# which costs more.
+# The module itself cannot be checked for the bug: a probe with a negative
+# length is the bug.
+# 🔴 To revisit: once the vendor fix (#237/#247) reaches the PPA,
+# "unfixed bug" becomes false for PPA builds - tell builds apart by srcversion or
+# narrow the warning to the pinned 2.0 and ARM.
+#
+# AWG_USERNS_ROOT is overridden only by tests (bats): a prefix for /proc, /sys
+# and /lib/modules.
+awg_userns_module_lines() {
+    local root="${AWG_USERNS_ROOT:-}" loaded=1 clone maxns netns aa aac md aa_on="" f kver key="" val="" price="" pre=""
+    if [[ ! -d "$root/sys/module/amneziawg" ]]; then
+        loaded=0
+        kver=$(uname -r 2>/dev/null) || return 0
+        [[ -n "$kver" && -d "$root/lib/modules/$kver" ]] || return 0
+        [[ -n "$(find "$root/lib/modules/$kver" -name 'amneziawg.ko*' -type f -size +0c -print -quit 2>/dev/null)" ]] || return 0
+    fi
+    # A setting that exists but was not read (or holds no number) is "do not
+    # know", not "allowed": otherwise a closed host with one unreadable file
+    # would get the warning "any user may".
+    for f in kernel/unprivileged_userns_clone user/max_user_namespaces user/max_net_namespaces \
+             kernel/apparmor_restrict_unprivileged_userns kernel/apparmor_restrict_unprivileged_userns_complain; do
+        [[ -e "$root/proc/sys/$f" && -z "$(_awg_sysctl_num "$root/proc/sys/$f")" ]] && return 0
+    done
+    clone=$(_awg_sysctl_num "$root/proc/sys/kernel/unprivileged_userns_clone")
+    maxns=$(_awg_sysctl_num "$root/proc/sys/user/max_user_namespaces")
+    netns=$(_awg_sysctl_num "$root/proc/sys/user/max_net_namespaces")
+    aa=$(_awg_sysctl_num "$root/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+    aac=$(_awg_sysctl_num "$root/proc/sys/kernel/apparmor_restrict_unprivileged_userns_complain")
+    # Not loaded and module loading disabled: it will not load by itself. Only
+    # needed for a module that is not loaded, so only then "not read" means quiet.
+    if [[ "$loaded" == 0 ]]; then
+        md=$(_awg_sysctl_num "$root/proc/sys/kernel/modules_disabled")
+        [[ -e "$root/proc/sys/kernel/modules_disabled" && -z "$md" ]] && return 0
+        [[ "$md" == 1 ]] && return 0
+    fi
+    # The path needs a network namespace of its own, so both limits are needed.
+    [[ -n "$maxns" && -n "$netns" ]] || return 0
+    [[ "$clone" == 0 || "$maxns" == 0 || "$netns" == 0 ]] && return 0
+    # Is AppArmor on: Y - yes, N - no, no file or not read - do not know.
+    if [[ -r "$root/sys/module/apparmor/parameters/enabled" ]]; then
+        IFS= read -r aa_on 2>/dev/null < "$root/sys/module/apparmor/parameters/enabled" || true
+        aa_on="${aa_on//[[:space:]]/}"
+    fi
+    [[ "$aa" == 1 && "$aa_on" != N && "${aac:-0}" == 0 ]] && return 0
+    if [[ -n "$clone" ]]; then
+        key=kernel.unprivileged_userns_clone val=0
+        price="rootless containers (Podman, rootless Docker), application sandboxes and any programs and services that create such namespaces without CAP_SYS_ADMIN on the host (root inside an ordinary container included) stop working; the Docker daemon in its usual mode is not affected."
+    else
+        key=user.max_user_namespaces val=0
+        pre="First write down the previous value (sysctl user.max_user_namespaces), so you can put it back. "
+        price="user namespaces can no longer be created at all, root included: rootless containers, application sandboxes, systemd services with PrivateUsers= and Docker with userns-remap stop working."
+    fi
+    printf '%s\t%s\n' \
+        "The amneziawg kernel module is on the system (loaded, or it may load on the first request), and any user may create user namespaces. That lets an unprivileged process set up its own AmneziaWG interface and hand the module I1-I5 values. The vendor module has an unfixed bug in parsing <r>/<rc>/<rd> tags with a negative length (amneziawg-linux-kernel-module#233): in some combinations it writes past a kernel buffer. Our commands refuse such values; the risk comes from other users and programs on this server." \
+        "${pre}To close this path: sudo sysctl -w ${key}=${val}, and to keep it after a reboot: echo '${key} = ${val}' | sudo tee /etc/sysctl.d/99-userns.conf. The cost: ${price} Namespaces that already exist are not affected: reboot after it to be sure. Details: ADVANCED.en.md#userns-module-adv"
+    return 0
+}
+
+# awg_userns_module_warn : the same for check - as warnings in the log.
+awg_userns_module_warn() {
+    local msg fix
+    while IFS=$'\t' read -r msg fix; do
+        [[ -n "$msg" ]] || continue
+        log_warn " - $msg"
+        log_warn "   $fix"
+    done <<< "$(awg_userns_module_lines)"
+    return 0
 }
 
 # awg_hpk_path : path to the header protection key (HeaderProtectionKey) file.
@@ -3248,6 +3649,10 @@ render_client_config() {
     # The 8th argument is a live client's DNS from regenerate_client. An argument, not a
     # variable: a variable can be inherited from the environment and skip the CLIENT_DNS check.
     local keep_dns="${8:-}"
+    # The server address for the hole in AllowedIPs (see _aip_carve_endpoints).
+    # Nested calls see it too: tunnel fullness and the comparisons account for it.
+    local _AWG_CARVE_EPS
+    _AWG_CARVE_EPS=$(_aip_endpoint_v4 "$endpoint")
 
     load_awg_params || return 1
 
@@ -3324,6 +3729,26 @@ render_client_config() {
             return 1
         }
         allowed_ips="$_aip_new"
+    fi
+
+    # The server address out of the tunnel: otherwise Linux awg-quick routes the
+    # packets to the Endpoint itself into the tunnel (see _aip_carve_endpoints).
+    if [[ -n "$_AWG_CARVE_EPS" ]]; then
+        local _aip_cut
+        _aip_cut=$(_aip_carve_endpoints "$allowed_ips" "$_AWG_CARVE_EPS") || {
+            log_error "Failed to exclude the server address from AllowedIPs - client config not created."
+            return 1
+        }
+        if _aip_has_v4 "$allowed_ips" && ! _aip_has_v4 "$_aip_cut"; then
+            log_error "Client '$name': of the IPv4 routes in AllowedIPs only the server's own address ($_AWG_CARVE_EPS) goes into the tunnel, and it must not go there - no IPv4 routes are left, config not created."
+            return 1
+        fi
+        allowed_ips="$_aip_cut"
+    elif [[ "${_AWG_EP_WARN_LATER:-0}" != "1" ]] \
+         && _aip_has_v4 "$allowed_ips" && ! _aip_has_token "$allowed_ips" "0.0.0.0/0"; then
+        # _AWG_EP_WARN_LATER=1 is set by regen, which replaces this list with the
+        # client's saved one and checks the final list itself.
+        _aip_warn_endpoint_not_v4 "$name" "$endpoint"
     fi
 
     # A per-client list with explicit IPv6 but no ::/0 over a full tunnel:
@@ -5334,7 +5759,9 @@ generate_client() {
         return 1
     fi
 
-    # Client config
+    # Client config. The render list is final here: render prints the non-IPv4
+    # Endpoint warning itself, and a regen flag from the environment cannot mute it.
+    local _AWG_EP_WARN_LATER=0
     render_client_config "$name" "$client_ip" "$client_privkey" "$server_pubkey" "$endpoint" "$_cport" "$client_ipv6" || {
         log_error "Rollback: removing artifacts for '$name'"
         _rollback_client_artifacts "$name"
@@ -5535,6 +5962,19 @@ regenerate_client() {
         return 1
     fi
 
+    # The server addresses for the hole in AllowedIPs: the new one and the one in
+    # the client's previous config. The comparisons with the server list and the
+    # tunnel fullness account for both holes, and only the new address is cut in
+    # the final list: an old hole cannot be told from a deliberate exclusion, and
+    # it must not be filled.
+    local _AWG_CARVE_EPS _ep_new _ep_old=""
+    _ep_new=$(_aip_endpoint_v4 "$endpoint")
+    if [[ -f "$AWG_DIR/${name}.conf" ]]; then
+        _ep_old=$(_aip_endpoint_v4 "$(sed -n 's/^Endpoint[ \t]*=[ \t]*//p' "$AWG_DIR/${name}.conf" | head -n 1 | tr -d '\r')")
+    fi
+    _AWG_CARVE_EPS="$_ep_new"
+    [[ -n "$_ep_old" && "$_ep_old" != "$_ep_new" ]] && _AWG_CARVE_EPS="${_AWG_CARVE_EPS:+$_AWG_CARVE_EPS }$_ep_old"
+
     # Preserve user settings from current .conf (modified via modify command)
     # current_dns stays empty without an old .conf: the DNS in the config is then the
     # one render_client_config wrote (CLIENT_DNS or the default), and overwriting it
@@ -5614,7 +6054,31 @@ regenerate_client() {
     [[ "$_had_conf" -eq 1 && -n "$current_dns" ]] && _keep_dns="$current_dns"
     # On 3.1 the copy of the set is taken under the same lock the .conf is
     # rewritten under, and it comes back on any failure below.
+    # A list where only the server address is left of the IPv4 routes is refused
+    # BEFORE the config is rewritten: after render the file is already rewritten
+    # from the server mode, and on 2.0 there is nothing to bring back. The check
+    # matters only where the list is going to be restored.
+    if [[ "${AWG_REGEN_RESET_ROUTES:-0}" != "1" && "$_had_conf" -eq 1 && -n "$_ep_new" ]] \
+       && _aip_has_v4 "$current_allowed_ips"; then
+        local _aip_pre
+        _aip_pre=$(_aip_carve_endpoints "$current_allowed_ips" "$_ep_new") || {
+            log_error "Failed to exclude the server address from AllowedIPs of client '$name' - config unchanged."
+            exec {lock_fd}>&-
+            unset CLIENT_PSK
+            return 1
+        }
+        if ! _aip_has_v4 "$_aip_pre"; then
+            log_error "Client '$name': of the IPv4 routes only the server's own address ($_ep_new) goes into the tunnel, and it must not go there. Config unchanged. Give the client routes (modify '$name' AllowedIPs) or run regen --reset-routes '$name'."
+            exec {lock_fd}>&-
+            unset CLIENT_PSK
+            return 1
+        fi
+    fi
     _awg31_set_snapshot "$name" || { exec {lock_fd}>&-; unset CLIENT_PSK; return 1; }
+    # When the client's list is going to be restored, render keeps quiet about a
+    # non-IPv4 Endpoint: its list is intermediate, the warning goes on the final one below.
+    local _AWG_EP_WARN_LATER=0
+    [[ "${AWG_REGEN_RESET_ROUTES:-0}" != "1" && "$_had_conf" -eq 1 ]] && _AWG_EP_WARN_LATER=1
     render_client_config "$name" "$client_ip" "$client_privkey" "$server_pubkey" "$endpoint" "$_cport" "$client_ipv6" "$_keep_dns" || {
         _awg31_set_restore_noted "$name"
         exec {lock_fd}>&-
@@ -5718,6 +6182,27 @@ regenerate_client() {
             log_warn "Client '$name': the IPv6 part of AllowedIPs was kept as-is, ::/0 not appended. Run regen --reset-routes to roll out the current routing mode."
         fi
         current_allowed_ips="$_aip_new"
+        # The preserved list gets the hole at the server address too: so clients
+        # issued before the fix are cured by a plain regen.
+        if [[ -n "$_ep_new" ]]; then
+            _aip_new=$(_aip_carve_endpoints "$current_allowed_ips" "$_ep_new") || {
+                log_error "Failed to exclude the server address from AllowedIPs of client '$name'. The config was already regenerated from the current routing mode, but the custom settings were NOT restored - check $AWG_DIR/${name}.conf."
+                _awg31_set_restore_noted "$name"
+                exec {lock_fd}>&-
+                unset CLIENT_PSK
+                return 1
+            }
+            if _aip_has_v4 "$current_allowed_ips" && ! _aip_has_v4 "$_aip_new"; then
+                log_error "Client '$name': of the IPv4 routes only the server's own address ($_ep_new) goes into the tunnel. The config was already regenerated from the current routing mode, but the custom settings were NOT restored - check $AWG_DIR/${name}.conf."
+                _awg31_set_restore_noted "$name"
+                exec {lock_fd}>&-
+                unset CLIENT_PSK
+                return 1
+            fi
+            current_allowed_ips="$_aip_new"
+        elif _aip_has_v4 "$current_allowed_ips" && ! _aip_has_token "$current_allowed_ips" "0.0.0.0/0"; then
+            _aip_warn_endpoint_not_v4 "$name" "$endpoint"
+        fi
     fi
     # A lone 1.1.1.1 from older versions becomes the pair, but not when it is a
     # deliberate choice through CLIENT_DNS='1.1.1.1'.
