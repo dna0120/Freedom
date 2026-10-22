@@ -3,8 +3,8 @@
 # ==============================================================================
 # Shared function library for AmneziaWG 3.x and 2.0
 # Author: @dna0120
-# Version: 6.0.1
-# Date: 2026-10-19
+# Version: 6.1.0
+# Date: 2026-10-22
 # Repository: https://github.com/dna0120/Freedom
 # ==============================================================================
 #
@@ -24,7 +24,7 @@ KEYS_DIR="${KEYS_DIR:-$AWG_DIR/keys}"
 # drifted apart (one file updated, the other not) - otherwise the mismatch shows
 # up as a "command not found" somewhere random. Bumped with the other versions.
 # shellcheck disable=SC2034  # used by the manage script after sourcing
-AWG_COMMON_VERSION="6.0.1"
+AWG_COMMON_VERSION="6.1.0"
 
 # --- Auto-cleanup of temporary files ---
 # NOTE: trap is NOT set here to avoid overwriting the caller's trap handler.
@@ -1589,7 +1589,7 @@ safe_load_config() {
                 OS_ID|OS_VERSION|OS_CODENAME|AWG_PORT|AWG_TUNNEL_SUBNET|\
                 DISABLE_IPV6|ALLOWED_IPS_MODE|ALLOWED_IPS|AWG_ENDPOINT|AWG_MTU|\
                 AWG_Jc|AWG_Jmin|AWG_Jmax|AWG_S1|AWG_S2|AWG_S3|AWG_S4|\
-                AWG_H1|AWG_H2|AWG_H3|AWG_H4|AWG_I1|AWG_I2|AWG_I3|AWG_I4|AWG_I5|AWG_PRESET|NO_TWEAKS|NO_CPS|KEEP_PACKAGES|\
+                AWG_H1|AWG_H2|AWG_H3|AWG_H4|AWG_I1|AWG_I1_PIN|AWG_I2|AWG_I3|AWG_I4|AWG_I5|AWG_PRESET|NO_TWEAKS|NO_CPS|KEEP_PACKAGES|\
                 AWG_APPLY_MODE|ALLOW_IPV6_TUNNEL|IPV6_SUBNET|SERVER_HAS_NATIVE_IPV6|PREV_AWG_PORT|CLIENT_ISOLATION|CLIENT_ISOLATION_NET|AWG_PROTOCOL|AWG_CPA|AWG_SERVER_NAME|ENABLE_BBR|CLIENT_DNS_1|CLIENT_DNS_2|CLIENT_IPV6_DIRECT)
                     export "$key=$value"
                     ;;
@@ -3260,6 +3260,18 @@ render_server_config() {
     case $- in *x*) _awg_xtrace_guard render_server_config "$@"; return ;; esac
     local peers_source="${1:-}"
     load_awg_params || return 1
+
+    # --i1 (issue #196): an I1 pinned in the init file (AWG_I1_PIN) wins over
+    # the live awg0.conf, otherwise a reinstall with --i1 would silently keep the
+    # old I1. The swap is said out loud: that shows both a hand edit of I1 that the
+    # pin overwrote and a run resumed after a reboot. When --i1 was passed in this
+    # same run, the installer already warned at step 0, so it is not repeated.
+    if [[ -n "${AWG_I1_PIN:-}" ]]; then
+        if [[ -n "${AWG_I1:-}" && "$AWG_I1" != "$AWG_I1_PIN" && "${CLI_I1_SET:-0}" != 1 ]]; then
+            log_warn "I1 from $SERVER_CONF_FILE (${AWG_I1}) replaced with the value pinned by --i1 (${AWG_I1_PIN}). To drop the pin: reinstall with --no-cps or with an explicit --preset, --mobile, --jc, --jmin or --jmax."
+        fi
+        AWG_I1="$AWG_I1_PIN"
+    fi
 
     # --no-cps (issue #159): load_awg_params re-reads I1 from the live awg0.conf
     # on a reinstall. When NO_CPS=1 clear I1 intentionally, otherwise the server
