@@ -19,7 +19,7 @@
       "name": "Xray-core",
       "repo": "XTLS/Xray-core",
       "pinned_tag": "",
-      "latest_observed": "v26.10.31",
+      "latest_observed": "v26.11.9",
       "track": "releases",
       "note": "VPS installs latest via Xray-install. latest_observed updated daily by CI."
     },
