@@ -17,10 +17,10 @@ fi
 
 # --- Safe mode and Constants ---
 set -o pipefail
-SCRIPT_VERSION="6.2.2"
+SCRIPT_VERSION="6.3.0"
 # Freedom's own release counter; SCRIPT_VERSION tracks the AmneziaWG upstream.
-FREEDOM_VERSION="1.3.22"
-UPSTREAM_AWG_PIN="v6.2.2"
+FREEDOM_VERSION="1.3.23"
+UPSTREAM_AWG_PIN="v6.3.0"
 UPSTREAM_AWG_REPO="bivlked/amneziawg-installer"
 
 FREEDOM_REF="${FREEDOM_REF:-main}"
@@ -62,8 +62,8 @@ HY2_MANAGE_SCRIPT_PATH="$HY2_DIR/manage_hysteria.sh"
 # SHA256 checksums of downloaded scripts. Updated at each release.
 # Verified in step5_download_scripts() after curl.
 # Format: sha256sum output (hex, 64 chars).
-COMMON_SCRIPT_SHA256="6fafb14f5d266ccaff8b666c6f825048fea6dfb6099b833df4d49b29273c58bc"
-MANAGE_SCRIPT_SHA256="406d3743e41db9d0df7be92e6aac8ee5550fa7f66894de59a776cb350fd79ff0"
+COMMON_SCRIPT_SHA256="cfd2a930334155a9662a1ecf757f5c90cae68fc469997dd6fdb226a65a2af4f3"
+MANAGE_SCRIPT_SHA256="f2c207ebbb89e9875fbe92efdaa1a3c755e747bbbeb124243b92bff4190a3f27"
 XRAY_COMMON_SCRIPT_SHA256="4cdc71cc701bfb230c4f041041fd9d7f42281c1dfcb4828491ee27127574a2f5"
 XRAY_MANAGE_SCRIPT_SHA256="880d35faffb67b1f55538d8eb613afa4cd2a37780a426544ec35a314d14e6bf2"
 HY2_COMMON_SCRIPT_SHA256="1584a48d798e38f88d0b9f5bf0226cbba329f40b9ce0c4296b7f5ee6dfe6a7a8"
