@@ -28,7 +28,7 @@
       "name": "Hysteria2",
       "repo": "apernet/hysteria",
       "pinned_tag": "",
-      "latest_observed": "app/v2.13.0",
+      "latest_observed": "app/v2.14.0",
       "track": "releases",
       "note": "VPS installs latest via get.hy2.sh. latest_observed updated daily by CI."
     },
