@@ -8,14 +8,14 @@ fi
 # ==============================================================================
 # AmneziaWG 3.x and 2.0 peer management script
 # Author: @dna0120
-# Version: 6.3.4
-# Date: 2026-11-19
+# Version: 6.3.6
+# Date: 2026-11-20
 # Repository: https://github.com/dna0120/Freedom
 # ==============================================================================
 
 # --- Safe mode and Constants ---
 # shellcheck disable=SC2034
-SCRIPT_VERSION="6.3.4"
+SCRIPT_VERSION="6.3.6"
 set -o pipefail
 # awg show colours its labels when WG_COLOR_MODE=always is in the environment,
 # even into a pipe. The secrets filter then does not recognise "header
@@ -413,8 +413,10 @@ validate_client_name() {
 }
 
 # JSON entry for a successful regen (v5.21.0). qr/vpnuri are paths if the
-# file exists at response time (regenerate_client refreshes them best-effort;
-# the contract makes no freshness promise - see the races note in the docs).
+# file exists at response time. regenerate_client removes the old ones before
+# it rewrites the .conf and rebuilds them best-effort: a file that was not
+# built gives null, not a path to an old copy; the contract gives no freshness
+# guarantee against a parallel operation.
 _regen_json_entry() {
     local name="$1" _jqr="null" _juri="null"
     [[ -f "$AWG_DIR/${name}.png" ]] && _jqr="\"$(json_escape "$AWG_DIR/${name}.png")\""
@@ -2058,7 +2060,7 @@ check_server() {
 # 0 - install --repair-module admits this server by its packages:
 # amneziawg-dkms is installed and not on hold, and no amneziawg-kmod-*
 # package (the ARM prebuilt) is installed. 1 - otherwise, and when dpkg
-# could not answer. A held package is the pinned 2.0 module or the ARM
+# could not answer. A held package is the pinned module or the ARM
 # prebuilt; the installer also refuses any installed prebuilt (the same
 # parsing as _awg_kmod_prebuilt_present).
 _kmod_installer_repair_admits() {
@@ -2203,7 +2205,7 @@ _kmod_json_list() {
 }
 
 # repair-module through the helper. Exit: 0 - success; 1 - failure or
-# refusal; 10 - the helper reported the prebuilt, the pinned 2.0 or "no
+# refusal; 10 - the helper reported the prebuilt, the pinned path or "no
 # package" path (their usual previous path; the caller decides).
 _kmod_repair_via_helper() {
     local hrc=0 frc="" mrc=1 cur k rel run mod hdr pkg rmod="null" rhdr="null" ok=0 other=0 pend_mod=0
